@@ -1,0 +1,133 @@
+/* ============================================================
+    UI 设计规范 · 设计变量 (Design Tokens)
+   与 references/design-tokens.md 一一对应。
+   用法：在页面 <head> 引入本文件，样式全部通过 var(--xxx) 取值，
+   禁止在业务代码里写死颜色/尺寸。
+   ============================================================ */
+
+:root {
+  /* ---------- 1. 主色 / 品牌色 ---------- */
+  --brand: #448BFF;            /* logo 衍生主色基准 */
+  --primary: #5d9cec;          /* 主色主值 */
+  --primary-hover: #4A8FE0;    /* 悬停 */
+  --primary-active: #3D7FCF;   /* 按下 */
+  --primary-disabled: #B8D4F0;  /* 禁用 */
+  --primary-01: #041C77;
+  --primary-02: #08288F;
+  --primary-03: #0D3AB2;
+  --primary-05: #5d9cec;
+  --primary-07: #53B2FA;
+  --primary-08: #74CEFF;
+
+  /* ---------- 2. 辅助色（4 系，含衍生） ---------- */
+  /* 辅色-01 绿 */
+  --aux-green: #3DD07F;
+  --aux-green-01: #0B6356; --aux-green-02: #13785F; --aux-green-03: #1E956B;
+  --aux-green-04: #2CB276; --aux-green-06: #6AE294; --aux-green-07: #8AF0A4;
+  --aux-green-08: #B3FABE; --aux-green-09: #D8FCDA;
+  /* 辅色-02 青 */
+  --aux-cyan: #00BDE9;
+  --aux-cyan-01: #00396F; --aux-cyan-02: #004F87; --aux-cyan-03: #006EA7;
+  --aux-cyan-04: #0093C8; --aux-cyan-06: #3CDDF1; --aux-cyan-07: #63F2F8;
+  --aux-cyan-08: #97FCF9; --aux-cyan-09: #CBFDF8;
+  /* 辅色-03 橙 */
+  --aux-orange: #FF9419;
+  --aux-orange-01: #7A2D04; --aux-orange-02: #933F07; --aux-orange-03: #B7580C;
+  --aux-orange-04: #DB7412; --aux-orange-06: #FFB652; --aux-orange-07: #FFCB75;
+  --aux-orange-08: #FFE1A3; --aux-orange-09: #FFF2D1;
+  /* 辅色-04 红 */
+  --aux-red: #D32913;
+  --aux-red-01: #650317; --aux-red-02: #7A0614; --aux-red-03: #970910;
+  --aux-red-04: #B5130D; --aux-red-06: #E46648; --aux-red-07: #F1926D;
+  --aux-red-08: #FABF9F; --aux-red-09: #FCE2CE;
+
+  /* ---------- 3. 功能色 ---------- */
+  --success: #00B34F;
+  --warning: #FA8015;
+  --link: #1A67F8;
+  --error: #CD1801;
+
+  /* ---------- 4. 中性 / 文字 / 背景 / 边框 ---------- */
+  --text-1: #222222;   /* 一级文字/标题 */
+  --text-2: #555555;   /* 二级文字/正文 */
+  --text-3: #999999;   /* 三级/备注/灰度图标 */
+  --text-disable: #cccccc; /* 提示/禁用 */
+  --border-strong: #E6E6E6; /* 较深分隔线/按钮边框 */
+  --border: #EFEFEF;   /* 常规分隔线/表格线 */
+  --bg: #f0f1f4;       /* 页面背景 */
+  --white: #FFFFFF;
+
+  /* ---------- 5. 字体 ---------- */
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", "Alibaba Sans", Arial, Helvetica, sans-serif;
+  --font-brand: "Alibaba Sans", "PingFang SC", sans-serif; /* 导航标题/slogan/logo */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* PC 字号阶梯（px） */
+  --fs-12: 12px; --fs-14: 14px; --fs-16: 16px; --fs-20: 20px;
+  --fs-24: 24px; --fs-26: 26px; --fs-28: 28px; --fs-30: 30px;
+  --fs-32: 32px; --fs-38: 38px; --fs-46: 46px; --fs-56: 56px; --fs-68: 68px;
+  --lh-base: 22px;     /* PC 主字号14 对应行高 */
+  --lh-ratio: 1.5;     /* 多行行高倍数 */
+
+  /* 移动端 */
+  --fs-m-main: 30px; --lh-m-main: 46px;
+  /* 大屏 */
+  --fs-screen-main: 14px;
+
+  /* ---------- 6. 间距（8 基准） ---------- */
+  --sp-xxs: 4px;
+  --sp-xs: 8px;
+  --sp-s: 16px;
+  --sp-m: 24px;
+  --sp-l: 32px;
+  --sp-xl: 48px;
+  --sp-xxl: 64px;
+  --sp-xxxl: 80px;
+  --content-padding: 20px;   /* PC 内容左右边距 */
+  --module-gap: 16px;        /* 模块间距 */
+
+  /* ---------- 7. 栅格 ---------- */
+  --grid-cols: 24;
+  --grid-gutter: 16px;
+  --sidebar-collapsed: 72px;
+  --sidebar-expanded: 216px;
+  --content-collapsed: 1328px;
+  --content-expanded: 1224px;
+
+  /* ---------- 8. 圆角 ---------- */
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius-4: 4px;
+  --radius-md: 8px;
+  --radius-lg: 32px;
+  --radius-round: 50%;
+
+  /* ---------- 9. 边框 ---------- */
+  --border-1: 1px solid var(--border);
+  --border-2: 2px solid var(--border);
+  --border-dashed: 1px dashed var(--border);
+
+  /* ---------- 10. 阴影（三层） ---------- */
+  /* 层级1 低（卡片 hover） */
+  --shadow-1-sm: 0 1px 2px -2px rgba(0,0,0,0.16);
+  --shadow-1-md: 0 3px 6px 0 rgba(0,0,0,0.12);
+  --shadow-1-lg: 0 5px 12px 4px rgba(0,0,0,0.09);
+  /* 层级2 中（下拉面板） */
+  --shadow-2-sm: 0 3px 6px -4px rgba(0,0,0,0.12);
+  --shadow-2-md: 0 6px 16px 0 rgba(0,0,0,0.08);
+  --shadow-2-lg: 0 9px 28px 8px rgba(0,0,0,0.05);
+  /* 层级3 高（对话框） */
+  --shadow-3-sm: 0 6px 6px -8px rgba(0,0,0,0.08);
+  --shadow-3-md: 0 9px 28px 0 rgba(0,0,0,0.05);
+  --shadow-3-lg: 0 12px 48px 16px rgba(0,0,0,0.03);
+
+  /* ---------- 11. 头部高度 ---------- */
+  --header-h: 64px;
+
+  /* ---------- 12. 图表色板 ---------- */
+  --chart-1: #3670F7; --chart-2: #43BB67; --chart-3: #FAB728; --chart-4: #F78A4A;
+  --chart-5: #F26363; --chart-6: #F552C2; --chart-7: #975FE4; --chart-8: #22D1D6;
+  --chart-ext: #AFBDFF #3BC58B #95E8C1 #F5E35F #FFD181 #F97178 #FFC4C6 #FFA7FF #FCBDFF #9DE6F8;
+}

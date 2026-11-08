@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>看房记录与对比</title>
+  <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
+  <link rel="stylesheet" href="./css/tokens.css?v=20261108sec11" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=20261108sec11" />
+  <link rel="stylesheet" href="./css/style.css?v=20261108sec11" />
+  <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
+  <script src="./config.js?v=20261108sec11"></script>
+</head>
+<body>
+  <!-- ============ 登录 / 注册（规范登录卡片） ============ -->
+  <section id="auth-view" class="auth-wrap">
+    <div class="auth-card">
+      <!-- 左侧：看房相关内容 -->
+      <div class="auth-hero">
+        <div class="auth-hero-brand">🏠 看房记录助手</div>
+        <h2 class="auth-hero-title">你的看房账本</h2>
+        <p class="auth-hero-sub">记录、对比、收藏你看过的每一套房源，<br/>让购房决策不再只靠记忆。</p>
+        <ul class="auth-hero-feats">
+          <li><span class="ico">📍</span><div><b>地图标注</b><span>每套房源位置、通勤一目了然</span></div></li>
+          <li><span class="ico">📊</span><div><b>横向对比</b><span>户型 / 价格 / 配套打分，优劣清晰</span></div></li>
+          <li><span class="ico">🔖</span><div><b>收藏跟进</b><span>跟进日志记录看房来龙去脉</span></div></li>
+          <li><span class="ico">🔒</span><div><b>数据私有</b><span>资料仅自己可见，换设备不丢</span></div></li>
+        </ul>
+        <div class="auth-hero-foot">安全 · 私有 · 永久保存</div>
+      </div>
+      <!-- 右侧：登录 / 注册（邮箱验证码内联输入；图形验证码走弹窗） -->
+      <div class="auth-form-side">
+        <div class="auth-seg" id="auth-seg">
+          <button type="button" class="auth-seg-btn active" data-mode="code">验证码登录</button>
+          <button type="button" class="auth-seg-btn" data-mode="password">密码登录</button>
+        </div>
+        <form id="auth-form" novalidate>
+          <div class="auth-field">
+            <label for="auth-email">邮箱</label>
+            <input type="email" id="auth-email" placeholder="请输入邮箱" autocomplete="username" />
+          </div>
+          <div class="auth-field hidden" id="auth-pass-field">
+            <label for="auth-password">密码</label>
+            <input type="password" id="auth-password" placeholder="请输入密码" autocomplete="current-password" />
+          </div>
+          <div class="auth-field" id="auth-code-field">
+            <label for="auth-email-code">验证码</label>
+            <div class="auth-code-row">
+              <input type="text" id="auth-email-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="请输入验证码" />
+              <button type="button" class="btn primary" id="auth-get-code">获取验证码</button>
+            </div>
+          </div>
+          <div class="auth-field hidden" id="auth-reset-fields">
+            <label for="auth-new-password">新密码</label>
+            <input type="password" id="auth-new-password" autocomplete="new-password" placeholder="至少 8 位" />
+            <label for="auth-new-password2" class="auth-sub-label">确认密码</label>
+            <input type="password" id="auth-new-password2" autocomplete="new-password" placeholder="再输入一次" />
+          </div>
+          <div class="auth-extra hidden" id="auth-extra">
+            <label class="auth-remember" for="auth-remember"><input type="checkbox" id="auth-remember" /> 记住密码</label>
+            <button type="button" class="link-btn" id="auth-forgot">忘记密码？</button>
+          </div>
+          <button type="submit" class="btn primary block auth-submit" id="auth-submit">登录</button>
+          <p class="msg" id="auth-msg"></p>
+        </form>
+        <div class="auth-divider"><span id="auth-switch-tip">还没有账户？</span></div>
+        <div class="auth-switch"><span id="auth-switch-pre">立即</span> <button type="button" class="link-btn" id="auth-switch-btn">注册</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 图形验证码弹窗（算式与候选数字都画在图中，点图作答；邮箱验证码仍在表单内输入） ============ -->
+  <div class="modal hidden" id="captcha-modal">
+    <div class="modal-box captcha-box">
+      <div class="modal-head"><span class="t">安全验证</span>
+        <button type="button" class="modal-x" id="captcha-close" aria-label="关闭">×</button></div>
+      <p class="captcha-hint">点击图中算式结果</p>
+      <canvas id="captcha-canvas" width="300" height="160" aria-label="点击图中算式结果"></canvas>
+      <div class="captcha-foot">
+        <span class="muted" id="captcha-msg"></span>
+        <button type="button" class="btn" id="captcha-refresh">换一个</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 主应用（侧边栏通顶 + 顶部栏仅覆盖内容区） ============ -->
+  <section id="app-view" class="app hidden">
+    <div class="zy-shell">
+      <!-- 侧边导航（通顶：展开 216px / 收起 72px / ≤960px 自动收起为图标） -->
+      <aside class="zy-sidebar" id="sidebar">
+        <button class="sidebar-toggle" id="sidebar-toggle" title="收起 / 展开侧边栏" aria-label="收起或展开侧边栏">‹</button>
+        <!-- 系统 Logo：房子轮廓 + 记录清单线条，寓意「记录每一套看过的房」 -->
+        <div class="zy-logo" title="看房记录与对比">
+          <span class="zy-logo-mark" aria-hidden="true">
+            <svg viewBox="0 0 40 40" width="40" height="40" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="hvtLogoGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#7fb9ff"/>
+                  <stop offset="100%" stop-color="#4a83e0"/>
+                </linearGradient>
+              </defs>
+              <rect x="0" y="0" width="40" height="40" rx="11" fill="url(#hvtLogoGrad)"/>
+              <circle cx="31" cy="10.2" r="2.5" fill="#fff" opacity=".92"/>
+              <path d="M20 8.6 L33.4 19.2 H30 V31 H10 V19.2 H6.6 Z" fill="#fff" opacity=".97"/>
+              <path d="M14 22.2 H26 M14 25.6 H26 M14 29 H21.5" stroke="#4a83e0" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+            </svg>
+          </span>
+          <span class="zy-logo-text"><b>看房记录</b><small>HOUSE VIEW TRACKER</small></span>
+        </div>
+        <div class="nav-item active" data-view="list" title="房源列表"><span class="nav-ico">📋</span><span class="nav-label">房源列表</span></div>
+        <div class="nav-item" data-view="map" title="地图分布"><span class="nav-ico">🗺️</span><span class="nav-label">地图分布</span></div>
+        <div class="nav-item" data-view="compare" title="房源对比"><span class="nav-ico">⚖️</span><span class="nav-label">房源对比</span></div>
+        <div class="nav-item" data-view="knowledge" title="购房知识"><span class="nav-ico">📚</span><span class="nav-label">购房知识</span></div>
+        <div class="nav-item" data-view="mortgage" title="房贷计算"><span class="nav-ico">🧮</span><span class="nav-label">房贷计算</span></div>
+        <div class="nav-item" data-view="purchased" title="已购房源"><span class="nav-ico">🏡</span><span class="nav-label">已购房源</span></div>
+        <div class="nav-item" data-view="renoList" title="装修列表"><span class="nav-ico">🔨</span><span class="nav-label">装修列表</span></div>
+        <div class="nav-item" data-view="trash" title="回收站"><span class="nav-ico">🗑️</span><span class="nav-label">回收站</span></div>
+        <div class="nav-spacer"></div>
+        <div class="nav-item" data-view="profile" title="设置"><span class="nav-ico">⚙️</span><span class="nav-label">设置</span></div>
+        <button class="nav-item sidebar-logout" id="logout-btn" title="退出登录"><span class="nav-ico">🚪</span><span class="nav-label">退出登录</span></button>
+      </aside>
+
+      <!-- 右侧列：顶部栏（宽度=内容区） + 内容区 -->
+      <div class="app-main">
+        <header class="zy-header">
+          <div class="hv-brand hv-col">
+            <div class="logo">🏠</div>
+            <div class="name" id="hv-page-name">看房记录</div>
+          </div>
+          <!-- 顶部栏正中：购房最晚时间倒计时（由 app.js 按设置渲染，未开启时为空） -->
+          <div class="hv-head-center" id="hv-deadline"></div>
+          <div class="hv-head-right hv-col">
+            <input class="search" id="global-search" placeholder="搜索小区 / 编号 / 中介" aria-label="全局搜索" />
+            <div class="hv-user" id="hv-user">
+              <button class="theme-toggle" id="theme-toggle" title="切换浅色 / 深色" aria-label="切换主题"></button>
+              <span class="hv-avatar" id="user-avatar" title=""></span>
+              <span class="hv-uname" id="user-name"></span>
+            </div>
+          </div>
+        </header>
+
+        <!-- 内容区域（左右边距 20px，模块间距 16px） -->
+        <main class="zy-content">
+          <div id="content"></div>
+        </main>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 评分权重弹窗 ============ -->
+  <div id="weights-modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span class="t">综合评分权重</span>
+        <button class="modal-x" id="wm-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:2px 0 12px">五项权重影响「综合评分」与「综合评分」排序的相对占比，不要求累加为 100。拖动滑块或填数字均可。</p>
+      <div class="wm-grid" id="wm-grid"></div>
+      <div class="wm-sum">当前合计：<b id="wm-sum">100</b></div>
+      <div class="modal-actions">
+        <button class="btn" id="wm-reset" type="button">恢复默认</button>
+        <span class="spacer"></span>
+        <button class="btn" id="wm-cancel" type="button">取消</button>
+        <button class="btn primary" id="wm-apply" type="button">应用</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 标记为已购房弹窗 ============ -->
+  <div id="purchase-modal" class="modal hidden">
+    <div class="modal-box" style="width:min(620px,94vw)">
+      <div class="modal-head">
+        <span class="t" id="pm-title">🏡 标记为已购房</span>
+        <button class="modal-x" id="pm-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="pm-scroll">
+        <p class="muted" style="font-size:12px;margin:2px 0 12px">填好实际成交价和房贷信息，月供、年供会按「房贷计算」同一套公式自动算出（也可以手动改）；保存后该房源会进入「已购房源」列表。</p>
+
+        <div class="pm-sec">🏡 成交与装修</div>
+        <div class="form-grid col2">
+          <div class="field"><label>购房价 / 实际成交价（万）</label><input id="pm-price" type="number" step="0.01" placeholder="如 168"/></div>
+          <div class="field"><label>是否装修</label><select id="pm-renovated">
+            <option value="">（未填写）</option><option value="yes">已装修</option><option value="no">未装修</option>
+          </select></div>
+          <div class="field"><label>装修大概费用（万）</label><input id="pm-cost" type="number" step="0.01" placeholder="如 18"/></div>
+        </div>
+
+        <div class="pm-sec">🏦 房贷信息</div>
+        <div class="form-grid col2">
+          <div class="field"><label>首付比例</label><select id="pm-down">
+            <option value="0.15">15%（现行最低）</option><option value="0.2">20%</option>
+            <option value="0.25">25%</option><option value="0.3" selected>30%（通用）</option>
+            <option value="0.4">40%</option><option value="0.5">50%</option>
+            <option value="1">100%（全款）</option>
+          </select></div>
+          <div class="field"><label>贷款类型</label><select id="pm-loantype">
+            <option value="商业贷款（商贷）" selected>商业贷款（商贷）</option>
+            <option value="公积金贷款">公积金贷款</option>
+            <option value="组合贷（公积金+商贷）">组合贷（公积金+商贷）</option>
+            <option value="全款">全款</option>
+          </select></div>
+          <div class="field"><label>贷款年限（年）</label><input id="pm-years" type="number" min="1" max="30" step="1" value="30" placeholder="如 30"/></div>
+          <div class="field" id="pm-comm-rate-row"><label>商贷年利率（%）</label><input id="pm-comm-rate" type="number" min="0" step="0.01" value="3.0" placeholder="2026 现行约 3.0"/></div>
+          <div class="field"><label>还款方式</label><select id="pm-method">
+            <option value="等额本息" selected>等额本息</option><option value="等额本金">等额本金</option>
+          </select></div>
+          <div class="field" id="pm-fund-rate-row"><label>公积金年利率（%）</label><input id="pm-fund-rate" type="number" min="0" step="0.001" value="2.6" placeholder="首套 2.6"/></div>
+          <div class="field" id="pm-fund-amt-row"><label>公积金贷款金额（万）</label><input id="pm-fund-amt" type="number" min="0" step="0.01" placeholder="其余部分算商贷"/></div>
+        </div>
+
+        <div class="pm-sec">📊 计算结果 <span id="pm-calc-state" class="muted" style="font-weight:normal;font-size:11px"></span></div>
+        <div class="form-grid col2">
+          <div class="field"><label>月供（元/月）</label><input id="pm-monthly" type="number" step="0.01" placeholder="自动计算，可修改"/></div>
+          <div class="field"><label>年供（元/年）<span id="pm-annual-tip" class="muted" style="font-weight:normal;font-size:11px"></span></label><input id="pm-annual" type="number" step="0.01" placeholder="自动计算，可修改"/></div>
+        </div>
+        <p class="muted" id="pm-note" style="font-size:11px;line-height:1.7;margin:8px 0 2px"></p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn danger hidden" id="pm-unmark" type="button">取消已购标记</button>
+        <span class="spacer"></span>
+        <button class="btn" id="pm-cancel" type="button">取消</button>
+        <button class="btn primary" id="pm-apply" type="button">确定标记</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 小区周边配套弹窗（Plan A：周边 POI + 卫星图） ============ -->
+  <div id="surround-modal" class="modal hidden">
+    <div class="modal-box sr-box" style="width:90vw;max-width:90vw;height:90vh;max-height:90vh;display:flex;flex-direction:column;overflow:hidden">
+      <div class="modal-head">
+        <span class="t" id="sr-title">📍 周边配套</span>
+        <button class="modal-x" id="sr-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="surround-body">
+        <div class="surround-bar">
+          <div class="sr-cats" id="sr-cats"></div>
+          <span class="spacer"></span>
+          <select id="sr-radius" class="tb-in sm" title="搜索半径">
+            <option value="1000">1 km</option>
+            <option value="1500" selected>1.5 km</option>
+            <option value="2000">2 km</option>
+            <option value="3000">3 km</option>
+          </select>
+          <button class="btn sm" id="sr-sat" type="button">🛰 卫星图</button>
+        </div>
+        <div class="surround-main">
+          <div id="surround-map" class="amap-mini" style="flex:1 1 auto;min-width:0;height:auto"></div>
+          <div id="surround-list" class="surround-list"></div>
+        </div>
+        <div class="muted" style="font-size:11px">提示：周边数据来自高德 POI，覆盖范围与精度以高德为准；某类别无结果说明该范围内暂无对应设施。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 新增装修方案弹窗 ============ -->
+  <div id="reno-new-modal" class="modal hidden">
+    <div class="modal-box" style="width:min(460px,94vw)">
+      <div class="modal-head">
+        <span class="t" id="rnm-title">🔨 新增装修方案</span>
+        <button class="modal-x" id="rnm-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:2px 0 14px">一套房可以记多家装修公司的报价用来比价；最后在装修列表里把选定的那条设为「已确定」。</p>
+      <div class="form-grid col2">
+        <div class="field full"><label>所属房源</label><select id="rnm-prop"></select></div>
+        <div class="field full"><label>方案名称</label><input id="rnm-name" placeholder="如：XX装饰 · 全包报价"/></div>
+      </div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button class="btn" id="rnm-cancel" type="button">取消</button>
+        <button class="btn primary" id="rnm-apply" type="button">去填写</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="demand-modal" class="modal hidden">
+    <div class="modal-box" style="max-width:560px">
+      <div class="modal-head">
+        <span class="t">🎯 购房需求</span>
+        <button class="modal-x" id="dm-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:2px 0 12px">填写你的意向要求，保存后自动按匹配度筛选已录入房源（≥40 分）；后续可在「设置 → 购房需求」中查看和修改。</p>
+      <div class="form-grid col2">
+        <div class="field"><label>预算上限（万）</label><input id="dm-budgetMax" type="number" placeholder="如 200"/></div>
+        <div class="field"><label>意向区域（逗号分隔）</label><input id="dm-districts" placeholder="如 高新区,天府新区"/></div>
+        <div class="field"><label>意向户型</label><input id="dm-layout" placeholder="如 3室"/></div>
+        <div class="field"><label>面积范围（㎡）</label><div class="range-pair"><input id="dm-areaMin" type="number" placeholder="下限"/><span>—</span><input id="dm-areaMax" type="number" placeholder="上限"/></div></div>
+        <div class="field full"><label>必须满足</label>
+          <div class="checks">
+            <label><input type="checkbox" id="dm-subway"/> 近地铁（≤1km）</label>
+            <label><input type="checkbox" id="dm-school"/> 有学区</label>
+          </div>
+        </div>
+        <div class="field full"><label>补充说明</label><textarea id="dm-notes" style="min-height:48px"></textarea></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn hidden" id="dm-exit" type="button">退出匹配</button>
+        <span class="spacer"></span>
+        <button class="btn" id="dm-cancel" type="button">取消</button>
+        <button class="btn primary" id="dm-apply" type="button">保存并匹配</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- ============ 购房知识：文章阅读弹窗 ============ -->
+  <div id="kb-modal" class="modal hidden">
+    <div class="modal-box kb-reader">
+      <div class="modal-head">
+        <span class="t" id="kb-title"></span>
+        <button class="modal-x" id="kb-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="kb-body" id="kb-body"></div>
+    </div>
+  </div>
+
+  <!-- 新建 / 上传资料：选择面板 -->
+  <div id="kb-new-modal" class="modal hidden">
+    <div class="modal-box" style="width:min(420px,94vw)">
+      <div class="modal-head">
+        <span class="t">新建 / 上传资料</span>
+        <button class="modal-x" id="kb-new-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="muted" style="margin:4px 0 14px">选择要新增的资料形式。</p>
+      <div class="kb-choose">
+        <button class="kb-choose-item" id="kb-choose-file" type="button">
+          <span class="kb-choose-ico">📤</span>
+          <span class="kb-choose-t">上传文件</span>
+          <span class="kb-choose-s">PDF / Word / 图片 / 文本等，单个 ≤30MB</span>
+        </button>
+        <button class="kb-choose-item" id="kb-choose-note" type="button">
+          <span class="kb-choose-ico">📝</span>
+          <span class="kb-choose-t">新建笔记</span>
+          <span class="kb-choose-s">写一段看房心得、户型点评或备忘</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建 / 查看笔记 -->
+  <div id="kb-note-modal" class="modal hidden">
+    <div class="modal-box" style="width:min(520px,94vw)">
+      <div class="modal-head">
+        <span class="t" id="kb-note-title-label">新建笔记</span>
+        <button class="modal-x" id="kb-note-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <label class="kb-note-label">标题</label>
+      <input id="kb-note-title" class="tb-in" placeholder="例如：XX小区看房心得" />
+      <label class="kb-note-label">内容</label>
+      <textarea id="kb-note-content" class="zy-textarea" style="min-height:160px" placeholder="记录这次看房的感受、户型点评、价格对比、注意事项……"></textarea>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button class="btn" id="kb-note-cancel" type="button">取消</button>
+        <button class="btn primary" id="kb-note-save" type="button">保存笔记</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./js/api.js?v=20261108sec11"></script>
+  <script src="./js/auth.js?v=20261108sec11"></script>
+  <script src="./js/store.js?v=20261108sec11"></script>
+  <script src="./js/knowledge-data.js?v=20261108sec11"></script>
+  <script src="./js/reno-demo.js?v=20261108sec11"></script>
+  <script src="./js/geo.js?v=20261108sec11"></script>
+  <script src="./js/map.js?v=20261108sec11"></script>
+  <script src="./js/app.js?v=20261108sec11"></script>
+
+  <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
+  <div id="aie-modal" class="modal hidden">
+    <div class="modal-box" style="width:min(580px,94vw);max-height:90vh;display:flex;flex-direction:column">
+      <div class="modal-head">
+        <span class="t">🤖 AI 智能录入</span>
+        <button class="modal-x" id="aie-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="aie-body">
+        <div class="field"><label>📝 粘贴房源文字</label>
+          <textarea id="aie-text" placeholder="把房源描述、聊天记录、中介发的信息粘贴到这里"></textarea></div>
+        <div class="field"><label>🔗 房源链接（链家 / 贝壳 / 安居客等，自动识别平台并尝试抓取）</label>
+          <input id="aie-url" placeholder="https://..." /></div>
+        <div class="field"><label>📷 上传截图（可多张，识别户型图 / 聊天截图）</label>
+          <input type="file" id="aie-files" accept="image/*" multiple /></div>
+        <div id="aie-previews" class="aie-previews"></div>
+        <div class="aie-row">
+          <button class="btn primary" id="aie-run" type="button">⚡ 智能识别</button>
+          <span class="muted" id="aie-status"></span>
+        </div>
+        <div id="aie-result" class="aie-result hidden">
+          <div class="aie-sec">识别结果（请核对后再保存）</div>
+          <div id="aie-fields" class="aie-fields"></div>
+          <div id="aie-warn"></div>
+          <label class="aie-ov"><input type="checkbox" id="aie-overwrite" /> 覆盖表单已有内容</label>
+          <div class="modal-actions">
+            <button class="btn" id="aie-cancel" type="button">关闭</button>
+            <button class="btn primary" id="aie-fill" type="button">填入表单</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

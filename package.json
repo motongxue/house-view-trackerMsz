@@ -1,0 +1,17 @@
+{
+  "name": "house-view-tracker",
+  "version": "3.0.0",
+  "description": "面向个人购房者的看房记录与对比工具：本地 PostgreSQL 存储 + 多用户隔离 + 高德地图自动标注（同源本地后端）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "pg": "^8.23.1"
+  }
+}

@@ -1,0 +1,135 @@
+/* ============================================================
+    UI 设计规范 · 组件样式 (UI Kit)
+   依赖 assets/tokens.css。提供 PC 端常用组件可直接复用的样式。
+   移动端/大屏按需调整 --fs-* 与边距即可复用同一套类。
+   ============================================================ */
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  line-height: var(--lh-base);
+  color: var(--text-2);
+  background: var(--bg);
+}
+
+/* ---------- 布局骨架 ---------- */
+.zy-header {
+  height: var(--header-h);
+  background: var(--white);
+  border-bottom: var(--border-1);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--content-padding);
+  gap: var(--content-padding);
+}
+.zy-header .logo { width: 104px; height: 32px; }
+.zy-header .slogan { font-family: var(--font-brand); font-size: 16px; font-weight: var(--fw-medium); }
+.zy-header .search { height: 30px; width: 200px; border: var(--border-1); border-radius: var(--radius-4); padding: 0 10px; font-size: var(--fs-14); color: var(--text-disable); }
+.zy-header .search:focus { color: var(--text-2); outline: none; border-color: var(--primary); }
+.zy-header .spacer { flex: 1; }
+.zy-header .icon { width: 16px; height: 16px; }
+.zy-header .avatar { width: 32px; height: 32px; border-radius: var(--radius-round); }
+
+.zy-shell { display: flex; min-height: calc(100vh - var(--header-h)); }
+.zy-sidebar { width: var(--sidebar-expanded); background: var(--white); border-right: var(--border-1); padding: var(--sp-s); }
+.zy-sidebar.collapsed { width: var(--sidebar-collapsed); }
+.zy-sidebar .nav-item { display: flex; align-items: center; gap: var(--sp-xs); padding: 10px var(--sp-xs); border-radius: var(--radius-4); color: var(--text-2); font-size: var(--fs-14); cursor: pointer; }
+.zy-sidebar .nav-item.active { color: var(--primary); background: rgba(26,103,248,0.08); font-weight: var(--fw-medium); }
+.zy-sidebar .nav-item .nav-icon { width: 16px; height: 16px; }
+.zy-content { flex: 1; padding: var(--content-padding); }
+.zy-breadcrumb { font-size: var(--fs-14); color: var(--text-3); margin-bottom: var(--sp-s); }
+.zy-breadcrumb a { color: var(--link); text-decoration: none; }
+
+/* ---------- 按钮 ---------- */
+.zy-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-xxs);
+  height: 32px; padding: 0 16px; border-radius: var(--radius-4);
+  font-size: var(--fs-14); font-weight: var(--fw-medium); cursor: pointer; border: 1px solid transparent;
+  transition: background .15s, border-color .15s;
+}
+.zy-btn-primary { background: var(--primary); color: #fff; }
+.zy-btn-primary:hover { background: var(--primary-hover); }
+.zy-btn-primary:active { background: var(--primary-active); }
+.zy-btn-primary:disabled { background: var(--primary-disabled); cursor: not-allowed; }
+.zy-btn-secondary { background: var(--white); color: var(--text-2); border-color: var(--border-strong); }
+.zy-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
+.zy-btn-text { background: transparent; color: var(--primary); padding: 0 8px; }
+.zy-btn-text:hover { opacity: .8; }
+.zy-btn-icon { width: 32px; padding: 0; }
+/* 按钮组：主要按钮在最右，从右往左弱化 */
+.zy-btn-group { display: flex; justify-content: flex-end; gap: var(--sp-xs); }
+
+/* ---------- 表单控件 ---------- */
+.zy-field { margin-bottom: var(--sp-s); }
+.zy-label { display: block; font-size: var(--fs-14); color: var(--text-2); margin-bottom: var(--sp-xxs); }
+.zy-input {
+  width: 100%; height: 32px; padding: 0 10px; border: var(--border-1); border-radius: var(--radius-4);
+  font-size: var(--fs-14); color: var(--text-2); background: #fff;
+}
+.zy-input::placeholder { color: var(--text-disable); }
+.zy-input:focus { outline: none; border-color: var(--primary); }
+.zy-input.error { border-color: var(--error); }
+.zy-textarea { width: 100%; min-height: 80px; padding: 8px 10px; border: var(--border-1); border-radius: var(--radius-4); font-size: var(--fs-14); resize: vertical; }
+
+/* ---------- 卡片 ---------- */
+.zy-card { background: var(--white); border: var(--border-1); border-radius: var(--radius-md); padding: var(--sp-s); box-shadow: var(--shadow-1-sm); }
+.zy-card:hover { box-shadow: var(--shadow-1-md); }
+.zy-card-title { font-size: var(--fs-16); color: var(--text-1); font-weight: var(--fw-medium); margin-bottom: var(--sp-xs); }
+
+/* ---------- 标签 ---------- */
+.zy-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: var(--fs-12); line-height: 18px; }
+.zy-tag-close { margin-left: 6px; cursor: pointer; }
+.zy-tag-green { background: var(--aux-green-09); color: var(--aux-green-03); }
+.zy-tag-blue  { background: #E8F0FF; color: var(--primary); }
+.zy-tag-orange{ background: var(--aux-orange-09); color: var(--aux-orange-03); }
+.zy-tag-red   { background: var(--aux-red-09); color: var(--aux-red-03); }
+
+/* ---------- 表格 ---------- */
+.zy-table { width: 100%; border-collapse: collapse; background: var(--white); font-size: var(--fs-14); }
+.zy-table th, .zy-table td { padding: 10px 12px; border-bottom: var(--border-1); text-align: left; color: var(--text-2); }
+.zy-table th { color: var(--text-1); font-weight: var(--fw-medium); background: #FAFAFA; }
+.zy-table tbody tr:hover { background: rgba(26,103,248,0.04); }
+.zy-table .op a { color: var(--link); margin-right: 12px; text-decoration: none; }
+
+/* ---------- 警告提示 ---------- */
+.zy-alert { padding: 10px 16px; border-radius: var(--radius-4); font-size: var(--fs-14); margin-bottom: var(--sp-s); display: flex; gap: var(--sp-xs); align-items: flex-start; }
+.zy-alert-success { background: rgba(0,179,79,0.1); color: var(--success); }
+.zy-alert-warning { background: rgba(250,128,21,0.1); color: var(--warning); }
+.zy-alert-error   { background: rgba(205,24,1,0.1); color: var(--error); }
+.zy-alert-info    { background: rgba(26,103,248,0.1); color: var(--primary); }
+
+/* ---------- 步骤条 ---------- */
+.zy-steps { display: flex; gap: var(--sp-m); }
+.zy-step { display: flex; align-items: center; gap: var(--sp-xs); color: var(--text-3); }
+.zy-step .dot { width: 24px; height: 24px; border-radius: var(--radius-round); background: var(--border-strong); color: #fff; display: flex; align-items: center; justify-content: center; font-size: var(--fs-12); }
+.zy-step.active .dot { background: var(--primary); }
+.zy-step.active { color: var(--text-1); }
+
+/* ---------- 分割线 ---------- */
+.zy-divider-h { height: 1px; background: var(--border); margin: var(--sp-s) 0; border: 0; }
+.zy-divider-v { width: 1px; background: var(--border); display: inline-block; vertical-align: middle; }
+.zy-divider-text { display: flex; align-items: center; color: var(--text-3); font-size: var(--fs-12); }
+.zy-divider-text::before, .zy-divider-text::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.zy-divider-text span { padding: 0 var(--sp-xs); }
+
+/* ---------- 对话框 / 遮罩 ---------- */
+.zy-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; }
+.zy-modal { background: var(--white); border-radius: var(--radius-md); box-shadow: var(--shadow-3-md); min-width: 360px; padding: var(--sp-m); }
+.zy-modal-title { font-size: var(--fs-16); color: var(--text-1); font-weight: var(--fw-medium); margin-bottom: var(--sp-s); }
+.zy-modal-footer { display: flex; justify-content: flex-end; gap: var(--sp-xs); margin-top: var(--sp-m); }
+
+/* ---------- 徽标 ---------- */
+.zy-badge { position: relative; display: inline-block; }
+.zy-badge .count { position: absolute; top: -6px; right: -10px; background: var(--aux-red); color: #fff; border-radius: var(--radius-round); font-size: 11px; padding: 0 5px; line-height: 16px; }
+
+/* ---------- 空状态 ---------- */
+.zy-empty { text-align: center; color: var(--text-3); padding: var(--sp-xxl) 0; }
+
+/* ---------- Toast / 全局提示 ---------- */
+.zy-toast { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 16px; border-radius: var(--radius-4); font-size: var(--fs-14); z-index: 999; }
+
+/* ---------- 间距工具类（8 基准） ---------- */
+.gap-xs { gap: var(--sp-xs); } .gap-s { gap: var(--sp-s); } .gap-m { gap: var(--sp-m); }
+.mt-s { margin-top: var(--sp-s); } .mb-s { margin-bottom: var(--sp-s); } .mt-m { margin-top: var(--sp-m); }
