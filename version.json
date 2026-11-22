@@ -1,11 +1,16 @@
 {
-  "version": "v1.6.2",
+  "version": "v1.6.3",
   "date": "2026-11-22",
-  "notes": "品牌位细节调整：侧边栏与关于页移除英文副标题、侧边栏标语缩小、登录页品牌名与标语改为上下结构。",
-  "package": "house-view-tracker-linux-x64_v1.6.2.tar.gz",
+  "notes": "修复刷新闪登录页、记住密码失效、更新记录 Failed to fetch；侧栏标语恢复 10px。",
+  "package": "house-view-tracker-linux-x64_v1.6.3.tar.gz",
   "downloadUrl": "",
   "installDir": "/data/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.6.3",
+      "date": "2026-11-22",
+      "notes": "修复：刷新先闪登录页（加启动遮罩）、记住密码失效（不再清空登录框自动填充）、更新记录 Failed to fetch（CSP 放行 GitHub/Gitee）；侧栏标语恢复 10px。"
+    },
     {
       "version": "v1.6.2",
       "date": "2026-11-22",

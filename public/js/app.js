@@ -839,9 +839,14 @@
 
   // 登录页一次性提示（例如闲置自动退出）：由 showAuth 消费，避免依赖 setTimeout 与异步登出的竞态
   let authNotice = '';
+  function dismissBootLoading() {
+    const bl = $('boot-loading');
+    if (bl) bl.remove();
+  }
   function showAuth() {
     $('auth-view').classList.remove('hidden');
     $('app-view').classList.add('hidden');
+    dismissBootLoading(); // 登录态判断完成，撤掉启动遮罩
     syncDark(); // 回到登录页时撤掉深色
     if (authNotice) {
       const m = $('auth-msg');
@@ -852,6 +857,7 @@
   async function showApp() {
     $('auth-view').classList.add('hidden');
     $('app-view').classList.remove('hidden');
+    dismissBootLoading(); // 登录态判断完成，撤掉启动遮罩
     syncDark(); // 进入主应用时恢复深色（如果用户选的是 hd-6）
     renderUser();
     syncMapMenu(); // 地图功能未启用时隐藏「地图分布」菜单
@@ -998,7 +1004,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.2';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.3';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');

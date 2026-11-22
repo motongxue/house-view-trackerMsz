@@ -9,7 +9,7 @@
 (function () {
   'use strict';
 
-  var VER = 'v1.6.2';
+  var VER = 'v1.6.3';
 
   var THEME = {
     dark: {

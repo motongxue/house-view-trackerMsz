@@ -162,7 +162,7 @@ body.dark .hv-dl-chip.is-over { background: rgba(205, 24, 1, .16); border-color:
 .zy-logo-mark svg { width: 100%; height: 100%; display: block; }
 .zy-logo-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .zy-logo-text b { font-size: 15px; font-weight: 700; letter-spacing: .6px; color: var(--text); white-space: nowrap; }
-.zy-logo-text .logo-slogan { margin-top: 3px; font-size: 5px; letter-spacing: 1px; color: var(--primary); white-space: nowrap; }
+.zy-logo-text .logo-slogan { margin-top: 3px; font-size: 10px; letter-spacing: 2px; color: var(--primary); white-space: nowrap; }
 .zy-logo-text small { margin-top: 4px; font-size: 9px; letter-spacing: 1.1px; color: var(--text-3); white-space: nowrap; }
 .zy-sidebar.collapsed .zy-logo { justify-content: center; margin-left: -8px; margin-right: -8px; padding: 0 8px; }
 .zy-sidebar.collapsed .zy-logo-text { display: none; }
@@ -828,6 +828,9 @@ body.dark .utabs .tab.active { color: var(--primary); border-bottom-color: var(-
 .warn { background: rgba(250, 128, 21, 0.10); border: 1px solid var(--aux-orange-06); color: var(--warning); padding: 10px 14px; border-radius: var(--radius-sm); font-size: var(--fs-14); margin-bottom: var(--sp-s); }
 
 /* ---------- 登录 / 注册 ---------- */
+/* 启动遮罩：盖住 boot 判断登录态前的空档，避免刷新先闪登录页 */
+.boot-loading { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--primary) 0%, var(--aux-cyan) 100%); }
+.boot-loading-inner { font-size: 17px; font-weight: 700; letter-spacing: 2px; color: #fff; opacity: .95; }
 .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--primary) 0%, var(--aux-cyan) 100%); padding: 24px; }
 .auth-card { width: 900px; max-width: 96vw; display: flex; background: var(--panel); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow-3-lg); }
 
