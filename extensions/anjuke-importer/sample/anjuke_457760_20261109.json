@@ -1,0 +1,115 @@
+{
+  "title": "青白江万达御湖龙湾",
+  "location": {
+    "province": "四川省",
+    "city": "成都",
+    "district": "青白江区",
+    "community": "青白江万达御湖龙湾",
+    "address": "青江南路99号",
+    "subwayStation": "",
+    "subwayDistance": ""
+  },
+  "attributes": {
+    "layout": "4室2厅2卫",
+    "area": 127,
+    "orientation": "",
+    "floor": "",
+    "builtYear": "",
+    "decoration": "毛坯",
+    "elevator": "",
+    "parking": "4000",
+    "propertyType": "",
+    "communityAge": "",
+    "propertyFee": 2.5
+  },
+  "transaction": {
+    "totalPrice": 75,
+    "unitPrice": 6500,
+    "status": "在售",
+    "sourcePlatform": "安居客",
+    "houseNumber": "457760",
+    "viewingDate": "",
+    "tax": "",
+    "downPayment": 11,
+    "monthlyPayment": 2282,
+    "ownership": "",
+    "loanable": "",
+    "loanType": "",
+    "gfundRatio": "",
+    "loanYears": "",
+    "repayment": "",
+    "agentName": "",
+    "agentPhone": "",
+    "wechat": ""
+  },
+  "facilities": {
+    "schoolInfo": ""
+  },
+  "media": {
+    "images": [
+      "https://pic4.ajkimg.com/display/xinfang/c1b0977ea228fd74468ffe66bd851456/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/a9398d6f32c5edf8b86dd38492cb9862/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/75ba854123df8d63468b47a6fe8a67ae/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/6136d8b7c02e38b351555350dd388984/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/f9ec9e78f47ad68b6f7b1599e9adbb3e/1080x720x98.jpg"
+    ],
+    "videos": [],
+    "floorPlans": [
+      "https://pic4.ajkimg.com/display/xinfang/6af3da3bc3781db03b216f774f069275/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/115f47e6ccc4f5f23910e6e26acd61fe/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/ce62edd42d55d7a9d250ced7ca649716/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/af1392ea4c3f931273c97611f792adf6/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/112adc721eaf2c72b26b86a04ab35244/1080x720x98.jpg"
+    ],
+    "environment": [
+      "https://pic4.ajkimg.com/display/xinfang/8873baa55b9759a1cc854864fbad4f27/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/a95c2bbe2aa72a6eb65f4d323bc3007d/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/fe0e854fb6d70e3441b7dc71ecb42a2a/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/5a2f4b2d7e493b7225bf78746c0f64ca/1080x720x98.jpg",
+      "https://pic4.ajkimg.com/display/xinfang/a0180ec35757c4b35bc57b9e794c8cf0/1080x720x98.jpg"
+    ],
+    "links": [
+      {
+        "kind": "video",
+        "url": "https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=loupan_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3Anull%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A1%2C%22consultantId%22%3Anull%2C%22videoId%22%3A13618442%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/c43877d28db71781cc5df2217d91474a/1081x778x98.jpg",
+        "label": "▶ 视频讲解 1"
+      },
+      {
+        "kind": "video",
+        "url": "https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A800584%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/dddc43c1de53a690f0280977b357eefa/1080x720x98.jpg",
+        "label": "▶ 视频讲解 2"
+      },
+      {
+        "kind": "video",
+        "url": "https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A865261%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/79851509fe7f65697febe05b019927ae/1080x720x98.jpg",
+        "label": "▶ 视频讲解 3"
+      },
+      {
+        "kind": "video",
+        "url": "https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A800586%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/d9aec08a856276516f42d55fb9dac5aa/1080x720x98.jpg",
+        "label": "▶ 视频讲解 4"
+      },
+      {
+        "kind": "video",
+        "url": "https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=loupan_video&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3Anull%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3Anull%2C%22consultantId%22%3Anull%2C%22videoId%22%3A5428681%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3A0%7D",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/90548d50ba87113ebabd262cc6d4181c/1080x720x98.jpg",
+        "label": "▶ 视频讲解 5"
+      },
+      {
+        "kind": "vr",
+        "url": "https://m.anjuke.com/panorama/ybj?params=%7B%22city_id%22%3A%2215%22%2C%22loupan_id%22%3A%22457760%22%2C%22housetype_id%22%3A%22800584%22%2C%22pano_id%22%3A%22999900024206%22%2C%22panorama_target_type%22%3A%223%22%2C%22seeHouseBtn%22%3A%221%22%2C%22panoSource%22%3A%22virtualModel%22%2C%22consultant_id%22%3A%22%22%2C%22page_source%22%3A%22VR%E9%A1%B5%22%7D&type=1&mode=1&chat_mode=1&webviewVersion=2",
+        "cover": "https://pic4.ajkimg.com/display/xinfang/662c56987df4d50e7b6f4acf512b3e2a/1080x720x98.jpg",
+        "label": "🌀 VR 看房"
+      }
+    ]
+  },
+  "geo": {
+    "lng": 104.25507929826,
+    "lat": 30.875622018045
+  },
+  "notes": "【来源】安居客 https://m.anjuke.com/cd/loupan/457760/?from=a-ajk&pm=copylink（楼盘ID 457760）\n【坐标】高德 104.25507929826,30.875622018045\n【标签】现房、项目竣工、大阳台、得房率高、配套成熟、花园洋房、低总价、园林景观、厨卫全明、南北通透、卧室全朝南、绕城外、毛坯、叠加、一房一价、低单价、河景地产、江景地产、湖景地产、银行、学校、医院、生态绿地、公园、商业街、购物中心、大户型、实得率高、全明空间、主卧朝南、客厅朝南、客餐厅相连、私密性好、玄关入户、户型方正、动静分离、全景飘窗、主卧套房、双阳台、双卫生间、热搜盘、人气楼盘、亲子乐园、大型小区、高层、小高层、民办中学、公办中学、公办小学、民办小学、民办幼儿园、公办幼儿园、3D沙盘、日照模拟、VR看房、品牌开发商\n【主力户型】4室2厅2卫 127m² 104.43万 / 4室2厅2卫 121m² 94.73万 / 4室2厅2卫 127m² 110.16万\n【基础信息】楼盘别名：成都青白江万达广场；销售状态：在售；环线位置：绕城外；楼盘地址：成都青白江区城区青江南路99号；开发商：成都青白江万达广场置业有限公司；开发商品牌：万达集团；投资商：成都青白江万达广场置业有限公司\n【销售信息】参考价格：6500元/㎡；房贷计算：首付11万，月供2282元；全部户型：4室户型；开盘时间：2026年5月1日；交房时间：2026年1月31日；售楼处地址：青江南路99号\n【建筑规划】占地面积：住宅：68667m²  别墅：68667m²；建筑面积：住宅：241883m²  别墅：241883m²；建筑类型：住宅：小高层、高层、花园洋房  别墅：叠加别墅；产权年限：住宅：70年  别墅：70年；容积率：住宅：2.5；绿化率：住宅：30%  别墅：30%；规划户数：住宅：1470  别墅：1470；装修情况：住宅：毛坯  别墅：毛坯；工程进度：已竣工，竣工时间：暂无数据\n【物业信息】物业公司：深圳市花样年国际物业服务有限公司成都分公司；物业管理费：住宅：2.5元/㎡/月；车位数：住宅：4000  别墅：4000；供电：住宅：民电；供水：住宅：民水\n【预售许可证】共 20 条，最近：蓉预售字第510113202683128号(2026-04-16)；蓉预售字第510113202579713号(2025-09-12)；成房预售许可证51011320195574号(2019-09-25)\n【视频/VR/沙盘】https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=loupan_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3Anull%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A1%2C%22consultantId%22%3Anull%2C%22videoId%22%3A13618442%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A800584%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A865261%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=layout_ai_video_tour&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3A800586%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3A8%2C%22consultantId%22%3Anull%2C%22videoId%22%3Anull%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3Anull%7D https://m.anjuke.com/xinfang/fuwu/advancedVideo?type=loupan_video&params_json=%7B%22scene%22%3Anull%2C%22layoutId%22%3Anull%2C%22loupanId%22%3A457760%2C%22districtId%22%3Anull%2C%22blockId%22%3Anull%2C%22videoInterpretationId%22%3Anull%2C%22dianpingId%22%3Anull%2C%22dongtaiId%22%3Anull%2C%22pageSource%22%3Anull%2C%22consultantId%22%3Anull%2C%22videoId%22%3A5428681%2C%22cityId%22%3Anull%2C%22contentId%22%3Anull%2C%22showDialog%22%3A0%7D https://m.anjuke.com/panorama/ybj?params=%7B%22city_id%22%3A%2215%22%2C%22loupan_id%22%3A%22457760%22%2C%22housetype_id%22%3A%22800584%22%2C%22pano_id%22%3A%22999900024206%22%2C%22panorama_target_type%22%3A%223%22%2C%22seeHouseBtn%22%3A%221%22%2C%22panoSource%22%3A%22virtualModel%22%2C%22consultant_id%22%3A%22%22%2C%22page_source%22%3A%22VR%E9%A1%B5%22%7D&type=1&mode=1&chat_mode=1&webviewVersion=2\n【媒体】楼盘图 5 张、户型图 5 张、区位/沙盘 5 张、视频 5 个、VR 1 个（视频 / VR 在「多媒体」里以卡片展示，点击可在原站打开播放）\n【页面未提供】朝向、楼层、建成年代、地铁、中介、税费、产权、贷款方式等需看房后补录"
+}

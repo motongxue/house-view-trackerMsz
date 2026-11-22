@@ -4,7 +4,7 @@
 //
 // 登录页按参考图重做：邮箱验证码内联输入，图形验证码保持弹窗。
 //   · 验证码登录：邮箱 + 邮箱验证码（免密），点「获取验证码」才弹图形验证
-//   · 密码登录  ：邮箱 + 密码；同 IP 连续失败 2 次后服务端才要求图形验证（同样弹窗）
+//   · 密码登录  ：邮箱 + 密码；每次点「登录」都先弹图形验证码，答对后才提交密码
 //   · 注册 / 找回密码：仍走邮箱验证码（验证邮箱真实性），复用同一套发码通道
 // 安全链路不变：需要发邮件时，先过一次性图形验证码；邮箱码一次性、10 分钟、错 5 次作废。
 // 注意：只有「图形验证码」是弹窗（#captcha-modal），邮箱验证码永远在表单里输入，不要再给它加弹窗。
@@ -12,12 +12,14 @@
 const Auth = (function () {
   let mode = 'code';        // code | password | signup | reset
   const listeners = [];
-  let capData = null;       // 当前内联图形挑战 { id, a, b, op, options }
+  let capData = null;       // 当前图形挑战 { id, a, b, op, options }
   let capAction = '';       // 'email-code' | 'password-login'
-  let pendingCap = null;    // 密码登录被要求验证后，二次提交携带的图形验证结果
   let sentEmail = '';       // 已成功发码的邮箱（发码后不允许偷偷换邮箱）
   let sentPurpose = '';     // register | code-login | reset
   let tickTimer = null;
+  // 邮箱验证码总开关：由后端 /api/auth/config 下发，默认 false（未取到时按关闭处理，保证开箱即用）
+  // false：登录页只有「密码登录」，注册只过图形验证码；true：显示验证码登录/找回密码完整流程
+  let emailVerification = false;
   const REMEMBER_KEY = 'hvt_remember_email';
   const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -71,16 +73,24 @@ const Auth = (function () {
   // signup  : 邮箱 + 密码 + 验证码
   // reset   : 邮箱 + 验证码 + 新密码/确认密码
   function switchMode(to) {
-    mode = ['code', 'password', 'signup', 'reset'].indexOf(to) >= 0 ? to : 'code';
+    // 邮箱验证关闭时不允许进入 code / reset 模式（没有邮件通道，这两种无法安全工作）
+    const allowed = ['code', 'password', 'signup', 'reset'].filter((m) => emailVerification || (m !== 'code' && m !== 'reset'));
+    mode = allowed.indexOf(to) >= 0 ? to : (emailVerification ? 'code' : 'password');
     const loginTab = (mode === 'code' || mode === 'password');
     el('auth-seg').classList.toggle('hidden', !loginTab);
     document.querySelectorAll('#auth-seg .auth-seg-btn').forEach((b) => {
       b.classList.toggle('active', b.dataset.mode === mode);
+      // 关闭邮箱验证时隐藏「验证码登录」标签，只留密码登录
+      if (b.dataset.mode === 'code') b.classList.toggle('hidden', !emailVerification);
     });
     el('auth-pass-field').classList.toggle('hidden', mode === 'code' || mode === 'reset');
-    el('auth-code-field').classList.toggle('hidden', mode === 'password');
+    // 验证码输入框：密码登录隐藏；注册时仅在邮箱验证开启才显示（关闭时注册只填邮箱+密码）
+    el('auth-code-field').classList.toggle('hidden', mode === 'password' || (mode === 'signup' && !emailVerification));
     el('auth-reset-fields').classList.toggle('hidden', mode !== 'reset');
     el('auth-extra').classList.toggle('hidden', mode !== 'password');
+    // 关闭邮箱验证时隐藏「忘记密码」（无邮件无法找回）
+    const forgot = el('auth-forgot');
+    if (forgot) forgot.classList.toggle('hidden', !emailVerification);
 
     el('auth-submit').textContent = mode === 'signup' ? '注册'
       : (mode === 'reset' ? '重置密码' : '登录');
@@ -100,7 +110,6 @@ const Auth = (function () {
     stopCountdown();
     sentEmail = '';
     sentPurpose = '';
-    pendingCap = null;
     scrubPasswords();
   }
 
@@ -216,7 +225,8 @@ const Auth = (function () {
     const cap = { id: capData.id, answer: n };
     const action = capAction;
     closeCaptcha();
-    if (action === 'password-login') { pendingCap = cap; submitPasswordLogin(); }
+    if (action === 'password-login') submitPasswordLogin(cap);
+    else if (action === 'signup-register') submitSignup(cap);  // 邮箱验证关闭时注册：图形验证码即安全门槛
     else sendEmailCode(cap);
   }
   // 点图形框里的数字作答：把鼠标坐标按 canvas 缩放比换算，命中即提交；点空白处只提示、不消耗挑战
@@ -305,14 +315,23 @@ const Auth = (function () {
     return true;
   }
 
-  async function submitPasswordLogin() {
+  // 密码登录入口：先校验表单，再弹图形验证码；答对后由 chooseCaptcha 带 cap 提交
+  function startPasswordLogin() {
+    if (!el('captcha-modal').classList.contains('hidden')) return; // 弹窗已开着，别重复领挑战
+    const email = emailValue(), pw = el('auth-password').value;
+    if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
+    if (!pw) { setMsg('请输入密码'); el('auth-password').focus(); return; }
+    setMsg('');
+    openCaptcha('password-login');
+  }
+
+  async function submitPasswordLogin(cap) {
     const email = emailValue(), pw = el('auth-password').value;
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); return; }
     if (!pw) { setMsg('请输入密码'); return; }
+    if (!cap || !cap.id) { startPasswordLogin(); return; } // 挑战丢失时绝不裸发登录请求
     const btn = el('auth-submit');
     btn.disabled = true;
-    const cap = pendingCap;
-    pendingCap = null;
     setMsg('');
     try {
       const data = await Api.login(email, pw, cap);
@@ -336,18 +355,34 @@ const Auth = (function () {
     finally { btn.disabled = false; }
   }
 
-  async function submitSignup() {
-    if (!assertCodeAndEmail('register')) return;
+  // 邮箱验证关闭时的注册入口：先校验邮箱/密码，再弹图形验证码，答对后带 cap 提交
+  function startSignup() {
+    const email = emailValue(), pw = el('auth-password').value;
+    if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
+    if (pw.length < 8) { setMsg('密码至少 8 位'); el('auth-password').focus(); return; }
+    setMsg('');
+    openCaptcha('signup-register');
+  }
+
+  async function submitSignup(cap) {
     const pw = el('auth-password').value;
     if (pw.length < 8) { setMsg('密码至少 8 位'); return; }
+    if (emailVerification) {
+      // 开启：沿用邮箱验证码流程
+      if (!assertCodeAndEmail('register')) return;
+    } else {
+      // 关闭：必须带图形验证码，否则退回弹窗（绝不裸发注册请求）
+      if (!cap || !cap.id) { startSignup(); return; }
+    }
     const btn = el('auth-submit');
     btn.disabled = true; setMsg('');
     try {
-      const data = await Api.register(emailValue(), pw, codeValue());
+      const data = await Api.register(emailValue(), pw, emailVerification ? codeValue() : '', cap);
       finishLogin(data.data);
     } catch (err) {
       const raw = err.message || '';
       if (/已注册/.test(raw)) { switchMode('password'); setMsg('该邮箱已注册，请直接登录'); }
+      else if (/验证未通过/.test(raw)) { setMsg(shortError(raw)); openCaptcha('signup-register'); }
       else setMsg(shortError(raw));
     } finally { btn.disabled = false; }
   }
@@ -369,8 +404,8 @@ const Auth = (function () {
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (mode === 'password') submitPasswordLogin();
-    else if (mode === 'signup') submitSignup();
+    if (mode === 'password') startPasswordLogin();
+    else if (mode === 'signup') { if (emailVerification) submitSignup(); else startSignup(); }
     else if (mode === 'reset') submitReset();
     else submitCodeLogin();
   }
@@ -389,8 +424,8 @@ const Auth = (function () {
     });
     el('auth-forgot').addEventListener('click', () => switchMode('reset'));
     el('auth-switch-btn').addEventListener('click', () => {
-      if (mode === 'signup') switchMode('code');
-      else if (mode === 'reset') switchMode('password');
+      if (mode === 'signup') switchMode(emailVerification ? 'code' : 'password');
+      else if (mode === 'reset') switchMode(emailVerification ? 'code' : 'password');
       else switchMode('signup');
     });
     ['auth-password', 'auth-new-password', 'auth-new-password2'].forEach((id) => {
@@ -407,9 +442,21 @@ const Auth = (function () {
         if (!el('auth-remember').checked) localStorage.removeItem(REMEMBER_KEY);
       } catch { /* ignore */ }
     });
-    switchMode('code');
+    // 先按默认（关闭态）渲染，再异步拉后端开关纠正；接口失败时保持关闭态，开箱即用不受影响
+    switchMode('password');
+    loadAuthConfig();
     // 浏览器可能在渲染后才自动填充，补一次清理（只清非真人输入的框）
     setTimeout(scrubPasswords, 300);
+  }
+
+  async function loadAuthConfig() {
+    try {
+      const r = await Api.authConfig();
+      emailVerification = !!(r && r.data && r.data.emailVerification);
+    } catch { emailVerification = false; }
+    // 开关确定后按正确的默认模式重渲染：开启→验证码登录，关闭→密码登录。
+    // 不能复用当前 mode：init 时还是在关闭态渲染的，mode 已被降级成 password。
+    switchMode(emailVerification ? 'code' : 'password');
   }
 
   async function signOut() {

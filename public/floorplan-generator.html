@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>户型参数生成器</title>
+<style>
+  :root{--bg:#f4f1ea;--card:#fff;--line:#ddd6c8;--ink:#33302a;--muted:#8a8475;--pri:#5d9cec;--pri2:#4a86d6;}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
+  header{padding:14px 20px;background:#2c2a25;color:#fff;display:flex;align-items:center;gap:12px}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header small{color:#b9b3a6;font-weight:400}
+  .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start}
+  .form{flex:1;min-width:340px;max-width:520px}
+  .preview{flex:1;position:sticky;top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px}
+  .preview svg{width:100%;height:auto;display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+  .room{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px;background:#fcfbf7}
+  .room h3{margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .room .rm{margin-left:auto;color:#c0392b;cursor:pointer;border:none;background:none;font-size:12px}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .fld{display:flex;flex-direction:column;gap:3px}
+  .fld label{font-size:11px;color:var(--muted)}
+  .fld input,.fld select{padding:5px 6px;border:1px solid var(--line);border-radius:6px;font-size:13px;background:#fff}
+  .chk{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;color:var(--muted)}
+  .chk label{display:flex;align-items:center;gap:3px}
+  .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+  button.act{background:var(--pri);color:#fff;border:none;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer}
+  button.act.alt{background:#fff;color:var(--pri2);border:1px solid var(--pri)}
+  button.ghost{background:#fff;border:1px solid var(--line);border-radius:7px;padding:8px 12px;cursor:pointer}
+  .hint{font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .toprow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .toprow .fld{flex:1;min-width:120px}
+  textarea{width:100%;height:120px;font-family:monospace;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>户型参数生成器</h1><small>填参数 → 实时预览 → 导出 JSON → 装修设计页「文件 ▾ → 导入方案」</small>
+</header>
+<div class="wrap">
+  <div class="form">
+    <div class="card">
+      <div class="toprow">
+        <div class="fld"><label>整体排布</label>
+          <select id="layout">
+            <option value="row">单排（一字型）</option>
+            <option value="L">L 形（上下两排错位）</option>
+          </select>
+        </div>
+        <div class="fld"><label>下排右移 (mm)</label><input id="shift" type="number" value="2200"/></div>
+        <div class="fld"><label>外凸深度(飘窗/阳台 mm)</label><input id="bump" type="number" value="700"/></div>
+      </div>
+      <div class="btns">
+        <button class="act" id="addRoom">+ 加一个房间</button>
+        <button class="ghost" id="preset3">套用：三室两厅两卫</button>
+        <button class="ghost" id="preset1">套用：一室一厅</button>
+      </div>
+      <div class="hint">每个房间可独立设：宽/高、形状(方/L/T)、飘窗/阳台开在哪面、窗和门开在哪面。墙只能横平竖直，所以「不规则」= 凹凸/L 形那种。</div>
+    </div>
+    <div id="rooms"></div>
+  </div>
+  <div class="preview">
+    <div class="hint">实时预览（mm，北在上）。导出后在装修设计页导入即可看到 3D。</div>
+    <div id="svg"></div>
+    <div class="btns" style="margin-top:10px">
+      <button class="act" id="export">导出 JSON</button>
+      <button class="act alt" id="copy">复制 JSON</button>
+      <a class="act alt" id="openApp" href="floorplan.html?layout=a3b2b" target="_blank" style="text-decoration:none;display:inline-block;line-height:34px">打开装修设计页</a>
+    </div>
+    <textarea id="out" readonly placeholder="导出的 JSON 会显示在这里"></textarea>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ===================== 工具 =====================
+const $ = s => document.querySelector(s);
+const mm = v => Math.round(v);
+const MAT = {bedroom:'wood',living:'tile800',kitchen:'tile600',bath:'antislip',balcony:'walnut',hall:'tile800',other:'carpet',bay:'marble'};
+const TYPELABEL = {bedroom:'卧室',living:'客厅',kitchen:'厨房',bath:'卫生间',balcony:'阳台',hall:'过道',other:'其他'};
+function mkF(type,name,cx,cy,w,d,rot,color){return {id:'f'+Math.random().toString(36).slice(2,9),type,name,cx,cy,w,d,rot:rot||0,color:color||'#c9d6df'};}
+
+// ===================== 默认房间清单 =====================
+let SEQ = 0;
+function newRoom(o={}){
+  return Object.assign({key:'r'+(SEQ++), name:'房间', type:'bedroom', w:3600, h:3600,
+    shape:'rect', bay:'', balcony:'', win:['S'], door:'N'}, o);
+}
+const PRESETS = {
+  preset3:[
+    {name:'客厅',type:'living',w:5200,h:4200,shape:'L',bay:'E',win:['S'],door:'W'},
+    {name:'主卧',type:'bedroom',w:3600,h:3600,shape:'rect',bay:'E',win:['S'],door:'W'},
+    {name:'次卧',type:'bedroom',w:3200,h:3400,shape:'rect',bay:'E',win:['S'],door:'W'},
+    {name:'厨房',type:'kitchen',w:2600,h:2400,shape:'rect',win:['N'],door:'S'},
+    {name:'客卫',type:'bath',w:2000,h:2200,shape:'rect',win:['N'],door:'S'},
+    {name:'阳台',type:'balcony',w:5200,h:1500,shape:'rect',balcony:'S',win:['S'],door:'N'},
+  ],
+  preset1:[
+    {name:'客厅',type:'living',w:4200,h:3800,shape:'L',bay:'E',win:['S'],door:'W'},
+    {name:'卧室',type:'bedroom',w:3400,h:3400,shape:'rect',bay:'E',win:['S'],door:'W'},
+    {name:'厨卫',type:'kitchen',w:2400,h:2200,shape:'rect',win:['N'],door:'S'},
+    {name:'阳台',type:'balcony',w:4200,h:1400,shape:'rect',balcony:'S',win:['S'],door:'N'},
+  ]
+};
+
+// ===================== 渲染表单 =====================
+function renderForm(){
+  const box = $('#rooms'); box.innerHTML='';
+  STATE.rooms.forEach((r,i)=>{
+    const el = document.createElement('div'); el.className='room';
+    const sideOpts = s=>`<option value="${s}" ${r.bay===s?'selected':''}>${s}</option>`;
+    el.innerHTML = `
+      <h3>房间 ${i+1}
+        <select data-k="type">
+          ${Object.entries(TYPELABEL).map(([v,t])=>`<option value="${v}" ${r.type===v?'selected':''}>${t}</option>`).join('')}
+        </select>
+        <input data-k="name" value="${r.name}" style="width:90px"/>
+        <button class="rm">删除</button>
+      </h3>
+      <div class="grid">
+        <div class="fld"><label>宽 (mm)</label><input data-k="w" type="number" value="${r.w}"/></div>
+        <div class="fld"><label>高 (mm)</label><input data-k="h" type="number" value="${r.h}"/></div>
+        <div class="fld"><label>形状</label>
+          <select data-k="shape">
+            <option value="rect" ${r.shape==='rect'?'selected':''}>方形</option>
+            <option value="L" ${r.shape==='L'?'selected':''}>L 形</option>
+            <option value="T" ${r.shape==='T'?'selected':''}>T 形</option>
+          </select></div>
+        <div class="fld"><label>飘窗开在哪面</label>
+          <select data-k="bay"><option value="">无</option>${['N','S','E','W'].map(sideOpts).join('')}</select></div>
+        <div class="fld"><label>阳台开在哪面</label>
+          <select data-k="balcony"><option value="">无</option>${['N','S','E','W'].map(sideOpts).join('')}</select></div>
+        <div class="fld"><label>门开在哪面</label>
+          <select data-k="door">${['N','S','E','W'].map(s=>`<option value="${s}" ${r.door===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="chk" style="margin-top:8px"><span>窗：</span>
+        ${['N','S','E','W'].map(s=>`<label><input type="checkbox" data-k="win" value="${s}" ${r.win.includes(s)?'checked':''}/>${s}</label>`).join('')}
+      </div>`;
+    el.querySelectorAll('[data-k]').forEach(inp=>{
+      const k = inp.dataset.k;
+      const ev = (inp.type==='checkbox')?'change':'input';
+      inp.addEventListener(ev, ()=>{
+        if(k==='win'){ r.win = [...el.querySelectorAll('input[data-k=win]:checked')].map(x=>x.value); }
+        else if(inp.tagName==='SELECT') r[k]=inp.value;
+        else if(inp.type==='number') r[k]=+inp.value||0;
+        else r[k]=inp.value;
+        update();
+      });
+    });
+    el.querySelector('.rm').onclick=()=>{ STATE.rooms.splice(i,1); renderForm(); update(); };
+    box.appendChild(el);
+  });
+}
+
+// ===================== 几何生成核心 =====================
+// 坐标单位 mm，y 向南(下)增大，北为上(y 小)
+function genPlan(){
+  const rooms = STATE.rooms;
+  const bump = +$('#bump').value || 700;
+  const shift = STATE.layout==='L' ? (+$('#shift').value||0) : 0;
+  // 摆位
+  const placed = [];
+  let cx = 0, topW=0, botW=0;
+  const top = [], bot=[];
+  rooms.forEach((r,i)=>{
+    const o = {def:r, x0:0,y0:0,x1:r.w,y1:r.h, bay:r.bay, balcony:r.balcony, win:r.win, door:r.door, type:r.type, name:r.name};
+    if(STATE.layout==='L' && i>=Math.ceil(rooms.length/2)) bot.push(o); else top.push(o);
+  });
+  top.forEach(o=>{ o.x0=cx; o.x1=cx+o.def.w; o.y0=0; o.y1=o.def.h; cx+=o.def.w; }); topW=cx;
+  cx = shift;
+  bot.forEach(o=>{ o.x0=cx; o.x1=cx+o.def.w; o.y0=-o.def.h; o.y1=0; cx+=o.def.w; }); botW = shift + (bot.length?cx-shift:0);
+  placed.push(...top, ...bot);
+
+  // 辅助：某面是否临建筑外
+  const rects = placed.map(p=>({x0:p.x0,y0:p.y0,x1:p.x1,y1:p.y1}));
+  const outside = (p,side)=>{
+    const pad=5;
+    let px,py;
+    if(side==='N'){px=(p.x0+p.x1)/2; py=p.y0-pad;}
+    if(side==='S'){px=(p.x0+p.x1)/2; py=p.y1+pad;}
+    if(side==='W'){px=p.x0-pad; py=(p.y0+p.y1)/2;}
+    if(side==='E'){px=p.x1+pad; py=(p.y0+p.y1)/2;}
+    for(const q of rects){ if(q===rectOf(p)) continue;
+      if(px>=q.x0&&px<=q.x1&&py>=q.y0&&py<=q.y1) return false; }
+    return true;
+  };
+  const rectOf = p => rects.find(q=>q.x0===p.x0&&q.y0===p.y0&&q.x1===p.x1&&q.y1===p.y1);
+
+  // 墙体：每间 4 边
+  const WALLS=[], WINS=[], DOORS=[], SLIDES=[], ROOMS=[];
+  const wall=(a,b,c,d,k)=>WALLS.push([mm(a),mm(b),mm(c),mm(d),k||'e']);
+  placed.forEach((p,idx)=>{
+    const k=p.def.type==='balcony'?'low':'b';
+    wall(p.x0,p.y0,p.x1,p.y0,'b'); // N
+    wall(p.x0,p.y1,p.x1,p.y1,'b'); // S
+    wall(p.x0,p.y0,p.x0,p.y1,'b'); // W
+    wall(p.x1,p.y0,p.x1,p.y1,'b'); // E
+    // 窗：临外且用户选了
+    (p.win||[]).forEach(s=>{ if(!outside(p,s)) return;
+      const [a,b,c,d]=winRect(p,s); WINS.push([mm(a),mm(b),mm(c),mm(d)]);
+    });
+    // 门：开在临内的一面（与邻房共享），否则开南(入户)
+    let ds = p.door;
+    if(ds && outside(p,ds)){ // 用户选的面是外墙，改放到一个临内面
+      const inner=['N','S','E','W'].find(s=>!outside(p,s)); ds = inner||'S';
+    }
+    const [a,b,c,d]=doorRect(p,ds); DOORS.push({name:p.name+'门',rect:[mm(a),mm(b),mm(c),mm(d)],h:[mm(a),mm(b)],c:[0,-1],o:[1,0],len:880});
+    // 飘窗 / 阳台 外凸
+    if(p.bay && outside(p,p.bay)) addBump(p,p.bay,'bay',bump,ROOMS,WALLS,WINS);
+    if(p.balcony && outside(p,p.balcony)) addBump(p,p.balcony,'balcony',bump+800,ROOMS,WALLS,WINS,SLIDES);
+    // 房间多边形（L/T 在矩形基础上加内凹，简化为矩形填充 + 一个内隔墙）
+    let poly = rectPoly(p);
+    ROOMS.push({id:'r'+idx, name:p.name, poly, mat: (MAT[p.def.type]||'carpet'), at:[(p.x0+p.x1)/2,(p.y0+p.y1)/2]});
+    if(p.def.shape!=='rect'){ // L/T 凹角：加一条内隔墙
+      const ix=(p.x0+p.x1)/2;
+      wall(ix,p.y0+200, ix, p.y1-200, 'e');
+    }
+  });
+
+  // 边界：去掉重叠的内部重复墙(可选，保留也无害) —— 这里保留，渲染只看颜色
+  const furniture = autoFurn(placed);
+  const rooms0={}; ROOMS.forEach(r=>rooms0[r.id]={name:r.name, mat:r.mat});
+  const xs=WALLS.flatMap(w=>[w[0],w[2]]), ys=WALLS.flatMap(w=>[w[1],w[3]]);
+  const m=1400;
+  const bounds={x:mm(Math.min(...xs)-m),y:mm(Math.min(...ys)-m),w:mm(Math.max(...xs)-Math.min(...xs)+2*m),h:mm(Math.max(...ys)-Math.min(...ys)+2*m)};
+  const origin=[mm((Math.min(...xs)+Math.max(...xs))/2), mm((Math.min(...ys)+Math.max(...ys))/2)];
+  return {WALLS,WINS,DOORS,SLIDES,ROOMS,furniture,rooms:rooms0,bounds,origin};
+}
+
+function rectPoly(p){return [[p.x0,p.y0],[p.x1,p.y0],[p.x1,p.y1],[p.x0,p.y1]];}
+function winRect(p,s){const L=Math.min((p.x1-p.x0),(p.y1-p.y0))*0.5, W=Math.min(L,1300), cxp=(p.x0+p.x1)/2, cyp=(p.y0+p.y1)/2;
+  if(s==='N')return [cxp-W/2,p.y0,cxp+W/2,p.y0+1];
+  if(s==='S')return [cxp-W/2,p.y1,cxp+W/2,p.y1+1];
+  if(s==='W')return [p.x0,cyp-W/2,p.x0+1,cyp+W/2];
+  return [p.x1,cyp-W/2,p.x1+1,cyp+W/2];}
+function doorRect(p,s){const W=900,cxp=(p.x0+p.x1)/2,cyp=(p.y0+p.y1)/2;
+  if(s==='N')return [cxp-W/2,p.y0,cxp+W/2,p.y0+1];
+  if(s==='S')return [cxp-W/2,p.y1,cxp+W/2,p.y1+1];
+  if(s==='W')return [p.x0,cyp-W/2,p.x0+1,cyp+W/2];
+  return [p.x1,cyp-W/2,p.x1+1,cyp+W/2];}
+function addBump(p,side,kind,depth,ROOMS,WALLS,WINS,SLIDES){
+  const k=kind==='bay'?'marble':'walnut';
+  let bx0,bx1,by0,by1;
+  if(side==='N'){bx0=p.x0+150;bx1=p.x1-150;by0=p.y0-depth;by1=p.y0;}
+  if(side==='S'){bx0=p.x0+150;bx1=p.x1-150;by0=p.y1;by1=p.y1+depth;}
+  if(side==='W'){by0=p.y0+150;by1=p.y1-150;bx0=p.x0-depth;bx1=p.x0;}
+  if(side==='E'){by0=p.y0+150;by1=p.y1-150;bx0=p.x1;bx1=p.x1+depth;}
+  WALLS.push([bx0,by0,bx1,by0,'b'],[bx0,by1,bx1,by1,'b'],[bx0,by0,bx0,by1,'b'],[bx1,by0,bx1,by1,'b']);
+  ROOMS.push({id:'bump_'+side+'_'+Math.round(bx0), name:kind==='bay'?'飘窗':'凸阳台', poly:[[bx0,by0],[bx1,by0],[bx1,by1],[bx0,by1]], mat:k, counted:false, at:[(bx0+bx1)/2,(by0+by1)/2]});
+  // 外凸面开窗 / 推拉门
+  if(kind==='bay'){ if(side==='N')WINS.push([bx0,by0,bx1,by0+1]); if(side==='S')WINS.push([bx0,by1,bx1,by1+1]); if(side==='W')WINS.push([bx0,by0,bx0+1,by1]); if(side==='E')WINS.push([bx1,by0,bx1+1,by1]); }
+  else { const dr = side==='N'?[[bx0,by0,bx1,by0+1]]:side==='S'?[[bx0,by1,bx1,by1+1]]:side==='W'?[[bx0,by0,bx0+1,by1]]:[[bx1,by0,bx1+1,by1]]; SLIDES.push({rect:dr,v:side==='W'||side==='E'}); }
+}
+function autoFurn(placed){
+  const f=[];
+  placed.forEach(p=>{
+    const cx=(p.x0+p.x1)/2, cy=(p.y0+p.y1)/2;
+    if(p.def.type==='bedroom'){ f.push(mkF('bed','床',cx,cy-200,1800,2000,0,'#c9d6df')); f.push(mkF('nightstand','床头柜',cx-1200,cy-1100,450,400)); f.push(mkF('nightstand','床头柜',cx+1200,cy-1100,450,400)); }
+    else if(p.def.type==='living'){ f.push(mkF('sofa','沙发',cx,cy+800,2400,900,0,'#b7c4b0')); f.push(mkF('coffeetable','茶几',cx,cy,1300,650)); }
+    else if(p.def.type==='kitchen'){ f.push(mkF('counter','橱柜台面',cx,cy+700,1800,600,0,'#e9e5de')); f.push(mkF('stove','燃气灶',cx,cy-600,750,450)); }
+    else if(p.def.type==='bath'){ f.push(mkF('toilet','马桶',cx-400,cy+500,400,700)); f.push(mkF('shower','淋浴',cx+500,cy-400,900,900)); }
+    else if(p.def.type==='balcony'){ f.push(mkF('plant','绿植',cx-800,cy,700,700,'','#9dbb8c')); }
+  });
+  return f;
+}
+
+// ===================== 预览 SVG =====================
+function update(){
+  const g = genPlan();
+  STATE.last = g;
+  const allx=[],ally=[];
+  g.WALLS.forEach(w=>{allx.push(w[0],w[2]);ally.push(w[1],w[3]);});
+  const minx=Math.min(...allx),miny=Math.min(...ally),maxx=Math.max(...allx),maxy=Math.max(...ally);
+  const pad=400, W=maxx-minx+pad*2, H=maxy-miny+pad*2;
+  let s=`<svg viewBox="${minx-pad} ${miny-pad} ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  s+=`<rect x="${minx-pad}" y="${miny-pad}" width="${W}" height="${H}" fill="#faf8f2"/>`;
+  g.ROOMS.forEach(r=>{ const pts=r.poly.map(p=>p.join(',')).join(' ');
+    s+=`<polygon points="${pts}" fill="${r.counted===false?'#efe9dc':'#fff'}" stroke="#cfc6b4" stroke-width="2"/>`;
+    s+=`<text x="${r.at[0]}" y="${r.at[1]}" font-size="220" text-anchor="middle" fill="#666" dominant-baseline="central">${r.name}</text>`; });
+  g.WALLS.forEach(w=>{ s+=`<rect x="${w[0]}" y="${w[1]}" width="${Math.abs(w[2]-w[0])}" height="${Math.abs(w[3]-w[1])}" fill="#3a3730"/>`; });
+  g.WINS.forEach(w=>{ s+=`<rect x="${Math.min(w[0],w[2])}" y="${Math.min(w[1],w[3])}" width="${Math.abs(w[2]-w[0])||4}" height="${Math.abs(w[3]-w[1])||4}" fill="#7fb0d8"/>`; });
+  g.DOORS.forEach(d=>{ const r=d.rect; s+=`<rect x="${Math.min(r[0],r[2])}" y="${Math.min(r[1],r[3])}" width="${Math.abs(r[2]-r[0])||4}" height="${Math.abs(r[3]-r[1])||4}" fill="#c0392b"/>`; });
+  g.furniture.forEach(f=>{ s+=`<rect x="${f.cx-f.w/2}" y="${f.cy-f.d/2}" width="${f.w}" height="${f.d}" fill="${f.color}" opacity="0.8" rx="20"/>`; });
+  s+=`</svg>`;
+  $('#svg').innerHTML=s;
+}
+function exportJSON(){
+  const g=STATE.last||genPlan();
+  const out={layout:'custom',furniture:g.furniture,rooms:g.rooms,demolished:[],measures:[],
+    WALLS:g.WALLS,WINS:g.WINS,DOORS:g.DOORS,SLIDES:g.SLIDES,ROOMS:g.ROOMS,bounds:g.bounds,origin:g.origin};
+  const txt=JSON.stringify(out,null,2);
+  $('#out').value=txt;
+  return txt;
+}
+
+// ===================== 状态与事件 =====================
+const STATE={rooms:[],layout:'row',last:null};
+$('#layout').onchange=e=>{STATE.layout=e.target.value;update();};
+$('#addRoom').onclick=()=>{STATE.rooms.push(newRoom());renderForm();update();};
+$('#preset3').onclick=()=>{STATE.rooms=PRESETS.preset3.map(newRoom);renderForm();update();};
+$('#preset1').onclick=()=>{STATE.rooms=PRESETS.preset1.map(newRoom);renderForm();update();};
+$('#export').onclick=()=>{const t=exportJSON();const b=new Blob([t],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='户型方案_'+Date.now()+'.json';a.click();};
+$('#copy').onclick=()=>{const t=exportJSON();navigator.clipboard.writeText(t).then(()=>alert('已复制 JSON'));};
+$('#bump').oninput=update; $('#shift').oninput=update;
+
+// 初始
+STATE.rooms=PRESETS.preset3.map(newRoom);
+renderForm(); update();
+</script>
+</body>
+</html>

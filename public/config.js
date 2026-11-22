@@ -16,5 +16,11 @@ window.APP_CONFIG = {
   AMAP_SECURITY_CODE: '',
 
   // （可选备用）高德「Web服务」Key：仅服务端使用，不在此暴露；用户在设置页填写后存后端。
-  AMAP_WEB_KEY: ''
+  AMAP_WEB_KEY: '',
+
+  // 版本更新检测：填你自己的 Gitee / GitHub 公开仓库里 version.json 的 raw 地址。
+  // 留空 = 「检查更新」按钮会提示未配置。只读取公开版本信息，不上传任何账号/房源数据。
+  // Gitee 示例：https://gitee.com/你的账号/house-view-tracker/raw/main/version.json
+  // GitHub 示例：https://raw.githubusercontent.com/你的账号/house-view-tracker/main/version.json
+  UPDATE_URL: ''
 };

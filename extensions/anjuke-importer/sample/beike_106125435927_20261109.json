@@ -1,0 +1,74 @@
+{
+  "title": "百悦城四期 3室1厅 南",
+  "location": {
+    "province": "四川省",
+    "city": "成都",
+    "district": "龙泉驿区",
+    "community": "百悦城四期",
+    "address": "",
+    "subwayStation": "龙华寺站(13号线)",
+    "subwayDistance": 800
+  },
+  "attributes": {
+    "layout": "3室1厅2卫",
+    "area": 92.26,
+    "orientation": "南",
+    "floor": "中楼层 (共41层)",
+    "builtYear": "2016-2020年",
+    "decoration": "精装",
+    "elevator": "有",
+    "parking": "",
+    "propertyType": "商品房",
+    "communityAge": "",
+    "propertyFee": ""
+  },
+  "transaction": {
+    "totalPrice": 108,
+    "unitPrice": 11707,
+    "status": "在售",
+    "sourcePlatform": "贝壳",
+    "houseNumber": "106125435927",
+    "viewingDate": "",
+    "tax": "",
+    "downPayment": "",
+    "monthlyPayment": "",
+    "ownership": "共有；满五年；无抵押",
+    "loanable": "",
+    "loanType": "",
+    "gfundRatio": "",
+    "loanYears": "",
+    "repayment": "",
+    "agentName": "熊自东",
+    "agentPhone": "4008515393 转 66566",
+    "wechat": ""
+  },
+  "facilities": {
+    "schoolInfo": ""
+  },
+  "media": {
+    "images": [
+      "https://ke-image.ljcdn.com/110000-inspection/17646865050_SRtIABlT3.jpg!m_fill,w_280,h_210,f_jpg?from=ke.com",
+      "https://ke-image.ljcdn.com/110000-inspection/17646865090_tOvVADFh5.jpg!m_fill,w_280,h_210,f_jpg?from=ke.com",
+      "https://ke-image.ljcdn.com/110000-inspection/17646865170_XO7ji9kQI.jpg!m_fill,w_280,h_210,f_jpg?from=ke.com"
+    ],
+    "videos": [],
+    "floorPlans": [
+      "https://ke-image.ljcdn.com/hdic-frame/standard_1764686456468.jpeg!m_fill,w_280,h_210,f_jpg?from=ke.com"
+    ],
+    "environment": [],
+    "links": [
+      {
+        "kind": "vr",
+        "url": "https://open.realsee.com/ke/LvK29zyJmd5MJowd/pxOw3rLAKYltjhphNTR57daCoJm56ZBl/#lianjia",
+        "cover": "https://vrlab-image4.ljcdn.com/release/screenshot/auto3d-light-p14P2G7BvL32EkXo/06f25300a64e7369b2740173e7a0bc46/1764655899_3/pc0_u8i9sCjFQ.jpg?imageMogr2/quality/70/thumbnail/1024x",
+        "label": "🌀 VR 看房"
+      }
+    ]
+  },
+  "geo": {
+    "lng": 104.18470418,
+    "lat": 30.57596031,
+    "source": "贝壳(百度→高德)"
+  },
+  "notes": "【来源】贝壳 https://cd.ke.com/ershoufang/106125435927.html?fb_expo_id=1172286705911955475（房源编号 106125435927）\n【卖点】精装横厅套三 户型方正，楼层好，采光好\n【标签】满五年、VR房源、随时看房、地铁\n【产权】挂牌 2025年11月23日；上次交易 2019年09月19日；房屋年限 满五年；产权所属 共有；抵押 无抵押；房屋用途 普通住宅；核验码 20252075879\n【房屋】套内面积 73.73㎡；梯户比 三梯七户；建筑结构 框架结构；建筑类型 塔楼；商圈 大面\n【小区】均价 12433 元/㎡；年代 2016-2020年；楼栋 3 栋\n【交通】龙华寺站(13号线) 约 800 米（页面描述，供参考）\n【中介】链家 · 熊自东 · 4008515393 转 66566（400 虚拟号）\n【坐标】贝壳百度坐标 104.1911606253,30.58204120417 已转换为高德 GCJ02\n【VR】https://open.realsee.com/ke/LvK29zyJmd5MJowd/pxOw3rLAKYltjhphNTR57daCoJm56ZBl/#lianjia\n【媒体】房源图 3 张、户型图 1 张、VR 1 个（贝壳缩略图外链，已按平台图片指令转换；VR 在「多媒体」里以卡片展示，点击可在原站打开；页面未提供 mp4 视频直链）\n【页面未提供】门牌地址、车位、物业费、税费/首付/月供、贷款方式、微信、看房日期，需看房后补录"
+}

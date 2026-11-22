@@ -41,26 +41,150 @@
   const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
   const lines = (v) => (v || '').split('\n').map((s) => s.trim()).filter(Boolean);
 
-  // ---------- 字段路径读写（CSV 导入导出用）----------
-  const CSV_COLS = [
-    ['title', '标题'], ['location.city', '城市'], ['location.district', '区域'], ['location.community', '小区'],
-    ['location.address', '地址'], ['location.subwayStation', '最近地铁站'], ['location.subwayDistance', '地铁距离(米)'],
-    ['attributes.layout', '户型'], ['attributes.area', '面积'], ['attributes.orientation', '朝向'], ['attributes.floor', '楼层'],
-    ['attributes.builtYear', '建成年代'], ['attributes.decoration', '装修'], ['attributes.elevator', '电梯'], ['attributes.parking', '车位'],
-    ['attributes.propertyType', '房屋性质'], ['attributes.communityAge', '小区新旧'], ['attributes.propertyFee', '物业费(元/㎡·月)'],
-    ['transaction.totalPrice', '总价(万)'], ['transaction.unitPrice', '单价(元/㎡)'], ['transaction.status', '状态'],
-    ['transaction.sourcePlatform', '来源平台'], ['transaction.houseNumber', '房源编号'], ['transaction.viewingDate', '看房日期'],
-    ['transaction.tax', '税费(万)'], ['transaction.downPayment', '首付(万)'], ['transaction.monthlyPayment', '月供(元)'],
-    ['transaction.ownership', '产权状态'], ['transaction.loanable', '是否可贷款'], ['transaction.loanType', '贷款方式'],
-    ['transaction.gfundRatio', '组合贷公积金占比(%)'], ['transaction.loanYears', '贷款年限(年)'], ['transaction.repayment', '还款方式'],
-    ['transaction.agentName', '中介'], ['transaction.agentPhone', '电话'], ['transaction.wechat', '微信'],
-    ['facilities.schoolInfo', '学区/对口学校'], ['notes', '备注'], ['geo.lng', '经度'], ['geo.lat', '纬度']
+  // ---------- 模型类型（唯一权威白名单在 ai-providers.js 的 MODEL_TYPES，
+  // 由 contract.js 断言两边逐项一致；这里只补中文名。类型只做标注，不参与选路） ----------
+  const AI_MODEL_TYPES = [
+    { id: 'llm', name: '大语言' },
+    { id: 'vision', name: '视觉' },
+    { id: 'multimodal', name: '多模态' },
+    { id: 'reasoning', name: '推理' },
+    { id: 'code', name: '代码' },
+    { id: 'embedding', name: '嵌入' },
+    { id: 'other', name: '其他' }
   ];
+  // ---------- AI 服务商预设（唯一数据源，勿在别处再列一份） ----------
+  // 只收录 OpenAI 兼容 /chat/completions 端点。一家服务商共用一个接口地址 + 一个 API Key，
+  // 下面挂多个具体模型；模型名变动很快，每行都能改 / 加 / 删，预设只是起点。
+  const AI_PROVIDER_PRESETS = [
+    { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', logo: 'D', kind: '国内', models: [
+      { id: 'chat', name: 'DeepSeek Chat', model: 'deepseek-chat', type: 'llm' },
+      { id: 'reasoner', name: 'DeepSeek Reasoner', model: 'deepseek-reasoner', type: 'reasoning' },
+      { id: 'v4flash', name: 'V4 Flash', model: 'deepseek-v4-flash', type: 'llm' }
+    ] },
+    { id: 'qwen', name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', logo: '通', kind: '国内', models: [
+      { id: 'plus', name: 'Qwen Plus', model: 'qwen-plus', type: 'llm' },
+      { id: 'q35plus', name: 'Qwen3.5 Plus', model: 'qwen3.5-plus', type: 'multimodal' },
+      { id: 'vlmax', name: 'Qwen VL Max', model: 'qwen-vl-max', type: 'vision' }
+    ] },
+    { id: 'doubao', name: '豆包 · 火山方舟', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', logo: '豆', kind: '国内', models: [
+      { id: 'seedpro', name: 'Seed 2.0 Pro', model: 'doubao-seed-2-0-pro-260215', type: 'multimodal' },
+      { id: 'seedlite', name: 'Seed 2.0 Lite', model: 'doubao-seed-2-0-lite-260428', type: 'llm' },
+      { id: 'vision', name: 'Vision Pro', model: 'doubao-1.5-vision-pro-32k-250115', type: 'vision' }
+    ] },
+    { id: 'glm', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', logo: 'G', kind: '国内', models: [
+      { id: 'glm46', name: 'GLM-4.6', model: 'glm-4.6', type: 'llm' },
+      { id: 'glm52', name: 'GLM-5.2', model: 'glm-5.2', type: 'reasoning' },
+      { id: 'glm46v', name: 'GLM-4.6V', model: 'glm-4.6v', type: 'vision' }
+    ] },
+    { id: 'kimi', name: 'Kimi · 月之暗面', baseUrl: 'https://api.moonshot.cn/v1', logo: 'K', kind: '国内', models: [
+      { id: 'v18k', name: 'Moonshot 8K', model: 'moonshot-v1-8k', type: 'llm' },
+      { id: 'k26', name: 'Kimi K2.6', model: 'kimi-k2.6', type: 'multimodal' },
+      { id: 'vision', name: 'Moonshot Vision', model: 'moonshot-v1-8k-vision-preview', type: 'vision' }
+    ] },
+    { id: 'siliconflow', name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', logo: '硅', kind: '国内', models: [
+      { id: 'dsv3', name: 'DeepSeek V3', model: 'deepseek-ai/DeepSeek-V3', type: 'llm' },
+      { id: 'qwen3vl', name: 'Qwen3 VL 32B', model: 'Qwen/Qwen3-VL-32B-Instruct', type: 'vision' },
+      { id: 'bgem3', name: 'BGE-M3', model: 'BAAI/bge-m3', type: 'embedding' }
+    ] },
+    { id: 'hunyuan', name: '腾讯混元', baseUrl: 'https://tokenhub.tencentmaas.com/v1', logo: '混', kind: '国内', models: [
+      { id: 'hy4', name: 'HY4 Preview', model: 'hy4-preview', type: 'llm' },
+      { id: 'turbos', name: 'Hunyuan TurboS', model: 'hunyuan-turbos', type: 'llm' },
+      { id: 'vision', name: 'Hunyuan Vision', model: 'hunyuan-vision', type: 'vision' }
+    ] },
+    { id: 'qianfan', name: '百度千帆', baseUrl: 'https://qianfan.baidubce.com/v2', logo: '千', kind: '国内', models: [
+      { id: 'e45t', name: 'ERNIE 4.5 Turbo', model: 'ernie-4.5-turbo-128k', type: 'llm' },
+      { id: 'e45', name: 'ERNIE 4.5', model: 'ernie-4.5-8k', type: 'llm' },
+      { id: 'e5', name: 'ERNIE 5', model: 'ernie-5.0', type: 'reasoning' }
+    ] },
+    { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', logo: 'O', kind: '海外', models: [
+      { id: 'gpt4o', name: 'GPT-4o', model: 'gpt-4o', type: 'multimodal' },
+      { id: 'mini', name: 'GPT-4o mini', model: 'gpt-4o-mini', type: 'llm' },
+      { id: 'gpt54', name: 'GPT-5.4', model: 'gpt-5.4', type: 'reasoning' }
+    ] },
+    { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', logo: 'R', kind: '聚合', models: [
+      { id: 'gpt4o', name: 'openai/gpt-4o', model: 'openai/gpt-4o', type: 'multimodal' },
+      { id: 'claude', name: 'claude-sonnet-5', model: 'anthropic/claude-sonnet-5', type: 'llm' },
+      { id: 'gemini', name: 'gemini-2.5-flash', model: 'google/gemini-2.5-flash', type: 'multimodal' }
+    ] }
+  ];
+  // 设置页左侧分组导航（7 组，默认打开「个人信息」）。
+  // 只切换显示，所有卡片始终在 DOM 里，页级「保存」行为不变。
+  const SETTINGS_GROUPS = [
+    { id: 'personal', name: '个人信息', icon: '👤' },
+    { id: 'appearance', name: '外观设置', icon: '🎨' },
+    { id: 'demand', name: '购房需求', icon: '🎯' },
+    { id: 'map', name: '地图服务', icon: '🗺️' },
+    { id: 'ai', name: 'AI 功能', icon: '🤖' },
+    { id: 'security', name: '安全设置', icon: '🔒' },
+    { id: 'monitor', name: '运行监控', icon: '📈' },
+    { id: 'about', name: '关于', icon: 'ℹ️' }
+  ];
+  const SETTINGS_DEFAULT_GROUP = 'personal';
+  // 记住当前打开的分组：保存 / 切页重绘后不跳回第一项
+  let settingsCurrentGroup = SETTINGS_DEFAULT_GROUP;
+
+  // ---------- 用户级配置：users.demand 统一读写（勿删） ----------
+  // demand 是「整体覆盖」语义：看房驾驶 / 购房计划的数据挂在 dashboard / plan 两个子键里，
+  // 因此任何一处保存都必须先合并旧值再提交，否则设置页、购房需求弹窗会把新子键清掉。
+  // 后端 PATCH /api/auth/me 早已支持 demand，所以这里不需要改 server.js、也不需要重启 8787。
+  function demandNow() { return (state.user && state.user.demand) || {}; }
+  async function saveDemandSection(section, value) {
+    const demand = Object.assign({}, demandNow(), { [section]: value });
+    const r = await Api.updateProfile({ demand });
+    state.user = r.data.user;
+    Api.setSession(Api.token(), state.user);
+    applyAmapKey();
+    return state.user;
+  }
+  // 页面内编辑自动保存：输入停顿 350ms 后合并提交，避免每次按键都发请求。
+  // 关键：先同步写进内存里的 demand（并落到 session），否则「刚填完就切菜单」时
+  // 新页面会从旧 demand 重新初始化，看起来像数据丢了；后端提交仍由 debounce 合并。
+  function makeAutoSave(section, getVal, statusEl) {
+    let timer = null;
+    return () => {
+      clearTimeout(timer);
+      if (state.user) {
+        state.user = Object.assign({}, state.user, {
+          demand: Object.assign({}, demandNow(), { [section]: getVal() })
+        });
+        try { Api.setSession(Api.token(), state.user); } catch (e) {}
+      }
+      if (statusEl) statusEl.textContent = '保存中…';
+      timer = setTimeout(async () => {
+        try {
+          await saveDemandSection(section, getVal());
+          if (statusEl) statusEl.textContent = '✅ 已自动保存到账号';
+        } catch (e) {
+          if (statusEl) statusEl.textContent = '保存失败：' + e.message;
+        }
+      }, 350);
+    };
+  }
+
+  // ---------- 字段路径读写（CSV 导入导出用）----------
+  // 房源字段清单唯一来源：public/js/property-schema.json（boot 启动时加载）。
+  // 系统录入 / CSV 导入导出、安居客采集插件、验证脚本都读这一份，别在这里再硬编码一份 CSV_COLS。
+  let CSV_COLS = [];
+  async function loadPropertySchema() {
+    const r = await fetch('/js/property-schema.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('字段清单加载失败（HTTP ' + r.status + '）');
+    const j = await r.json();
+    if (!Array.isArray(j.csvCols) || !j.csvCols.length) throw new Error('字段清单格式不正确');
+    CSV_COLS = j.csvCols;
+    // 外链图片规则与插件共用同一份；必须在首次 Store.list() 之前注入，
+    // 这样历史房源里已存坏的贝壳原图链接在读取时就能自动修好。
+    if (j.imageRules) Store.configureMediaRules(j.imageRules);
+  }
   function getPath(o, path) { let v = o; for (const k of path.split('.')) { if (v == null) return ''; v = v[k]; } return v == null ? '' : v; }
   function setPath(o, path, val) {
     const ks = path.split('.'); let v = o;
     for (let i = 0; i < ks.length - 1; i++) { if (v[ks[i]] == null || typeof v[ks[i]] !== 'object') v[ks[i]] = {}; v = v[ks[i]]; }
     v[ks[ks.length - 1]] = val;
+  }
+  // 坐标安全格式化：导入数据可能把经纬度存成字符串，直接 .toFixed() 会抛 TypeError
+  function fmtCoord(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && v !== '' && v != null ? n.toFixed(5) : String(v == null ? '' : v);
   }
   function toCsv(list) {
     const escCsv = (s) => { s = String(s == null ? '' : s); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -79,7 +203,15 @@
       const o = { location: {}, attributes: {}, transaction: {}, facilities: {}, media: { images: [], videos: [] } };
       header.forEach((h, i) => {
         const col = CSV_COLS.find((c) => c[1] === h);
-        if (col) { const raw = (cells[i] || '').trim(); if (raw !== '') setPath(o, col[0], raw); }
+        if (col) {
+          const raw = (cells[i] || '').trim();
+          if (raw === '') return;
+          // 经纬度按数值写入，CSV 只是文本容器；其余字段保持原样
+          if (col[0] === 'geo.lng' || col[0] === 'geo.lat') {
+            const n = Number(raw);
+            if (Number.isFinite(n)) setPath(o, col[0], n);
+          } else setPath(o, col[0], raw);
+        }
       });
       o.title = o.title || o.location.community || '导入房源';
       rows.push(o);
@@ -115,7 +247,14 @@
     const t = text || '';
     const pick = (re) => { const m = t.match(re); return m ? (m[1] || m[2] || '').trim() : ''; };
     out.location.community = pick(/(?:小区|楼盘|小区名|社区)[：: ]*([^\n，。,]+)/) || pick(/([一-龥]{2,10}(?:小区|花园|雅居|公馆|城|苑|府|邸|广场|家园|新村|国际))/);
-    out.location.district = pick(/(?:区域|区县|地段)[：: ]*([^\n，。,]+)/) || pick(/(天府新区|高新区|武侯区|锦江区|成华区|青羊区|金牛区|双流区|龙泉驿区|郫都区|温江区|新都区)/);
+    // 区县不再写死成都 12 个，改从全国行政区划表里识别；命中后同步带出省 / 市
+    const geoHit = (window.Regions && Regions.findInText) ? Regions.findInText(t) : null;
+    out.location.district = pick(/(?:区域|区县|地段)[：: ]*([^\n，。,]+)/) || (geoHit && geoHit.district) || '';
+    if (geoHit) {
+      if (geoHit.province) out.location.province = geoHit.province;
+      if (geoHit.city) out.location.city = geoHit.city;
+      if (!out.location.district && geoHit.district) out.location.district = geoHit.district;
+    }
     out.attributes.layout = pick(/(?:户型|格局)[：: ]*([^\n，。,]+)/) || pick(/(\d+室\d+厅\d*卫*)/);
     const area = pick(/(\d+(?:\.\d+)?)\s*㎡|(\d+(?:\.\d+)?)\s*平米|面积[：: ]*(\d+(?:\.\d+)?)/);
     out.attributes.area = parseFloat(area) || null;
@@ -131,8 +270,18 @@
     return out;
   }
 
+  // ---------- 视图切换 / 高级搜索图标（线性 SVG，统一随文字色）----------
+  const ICON_CARD = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
+  const ICON_LIST = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
+  const ICON_FILTER = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>';
+  // 视图按钮：当前是表格就显示「卡片」图标（点它切回卡片），反之显示「列表」图标
+  function viewModeBtn(id) {
+    const toCard = state.listMode === 'table';
+    return `<button class="btn btn-icon view-mode-btn" id="${id}" title="${toCard ? '切换为卡片显示' : '切换为列表显示'}" aria-label="${toCard ? '切换为卡片显示' : '切换为列表显示'}">${toCard ? ICON_CARD : ICON_LIST}</button>`;
+  }
+
   const state = {
-    user: null, properties: [], view: 'list', listMode: 'card', selected: new Set(), editing: null, formGeo: null,
+    user: null, properties: [], view: 'dashboard', listMode: 'card', selected: new Set(), editing: null, formGeo: null,
     batchSel: new Set(),                                  // 批量选择（删除 / 改状态）
     pickMode: null,                                       // 勾选框显示模式：null | 'compare' | 'batch'
     page: 1, pageSize: 10,                                // 房源列表分页
@@ -148,10 +297,10 @@
     renoCompareSel: new Set(),                            // 装修列表勾选去对比的方案 key
     renoListQ: '', renoListPage: 1, renoListPageSize: 10,  // 装修列表：搜索与独立分页
     renoNewName: '',                                      // 新增方案弹窗带过来的初始名称
-    lastMenuView: 'list',                                 // 最后一次菜单视图：详情 / 装修页返回时用
+    lastMenuView: 'dashboard',                            // 最后一次菜单视图：详情 / 装修页返回时用
     filtered: [],                                         // 当前筛选结果（供“全选”使用）
     headerTheme: 'hd-1',                                  // 顶部栏配色主题
-    filters: { q: '', district: '', platform: '', status: '', sort: 'time',
+    filters: { q: '', city: '', district: '', platform: '', status: '', sort: 'time',
       layout: '', orientation: '', floor: '',
       totalMin: '', totalMax: '', areaMin: '', areaMax: '',
       decoration: '', subwayMax: '', viewingFrom: '', viewingTo: '',
@@ -184,7 +333,7 @@
 
   // ---------- 重置列表筛选（点击任意菜单时调用，页面内容回到初始态） ----------
   function resetListFilters() {
-    state.filters = { q: '', district: '', platform: '', status: '', sort: 'time',
+    state.filters = { q: '', city: '', district: '', platform: '', status: '', sort: 'time',
       layout: '', orientation: '', floor: '',
       totalMin: '', totalMax: '', areaMin: '', areaMax: '',
       decoration: '', subwayMax: '', viewingFrom: '', viewingTo: '',
@@ -647,11 +796,13 @@
   // ---------- 路由 ----------
   // 记住当前菜单视图：浏览器刷新后仍停留在同一页（与侧栏收起、主题同类本地记忆）
   const VIEW_KEY = 'hvt_view';
-  const MENU_VIEWS = ['list', 'map', 'compare', 'knowledge', 'mortgage', 'purchased', 'renoList', 'trash', 'profile'];
+  const MENU_VIEWS = ['dashboard', 'plan', 'list', 'map', 'compare', 'knowledge', 'mortgage', 'purchased', 'renoList', 'floorplan', 'trash', 'profile'];
   // 顶部栏左侧标题跟随当前菜单（刷新后由 setView 恢复，不会出现标题与菜单不一致）
   const VIEW_TITLES = {
-    list: '房源列表', map: '地图分布', compare: '房源对比', knowledge: '购房知识',
-    mortgage: '房贷计算', purchased: '已购房源', renoList: '装修列表', trash: '回收站', profile: '设置',
+    list: '房源列表', dashboard: '看房驾驶', plan: '购房计划',
+    map: '地图分布', compare: '房源对比', knowledge: '购房知识',
+    mortgage: '房贷计算', purchased: '已购房源', renoList: '装修列表', floorplan: '装修设计',
+    trash: '回收站', profile: '设置',
     renovation: '装修信息', renovationForm: '填写装修信息', detail: '房源详情'
   };
   function renderPageName(name) {
@@ -714,6 +865,7 @@
   }
 
   function setView(name) {
+    if (name === 'profile') { openSettingsModal(); return; }
     state.view = name;
     if (MENU_VIEWS.indexOf(name) !== -1) state.lastMenuView = name;
     // 「房源对比」菜单默认停在房源对比；只有装修列表点「对比选中」进来才切到装修对比
@@ -739,9 +891,14 @@
 
   function renderView(name) {
     const c = $('content');
+    // 3D 场景持有 WebGL 上下文与 RAF，离开页面必须销毁，避免多开泄漏
+    if (name !== 'floorplan') destroyFloorplan();
     if (name === 'list') return renderList(c);
+    if (name === 'dashboard') return renderDashboard(c);
+    if (name === 'plan') return renderPlan(c);
     if (name === 'purchased') return renderPurchased(c);
     if (name === 'renoList') return renderRenoList(c);
+    if (name === 'floorplan') return renderFloorplan(c);
     if (name === 'renovation') return renderRenovation(c, state.renoPropId);
     if (name === 'renovationForm') return renderRenovationForm(c, state.renoPropId);
     if (name === 'map') return renderMap(c);
@@ -751,6 +908,350 @@
     if (name === 'mortgage') return renderMortgage(c);
     if (name === 'profile') return renderProfile(c);
     if (name === 'form') return renderForm(c, null);
+  }
+
+  /* ============================================================
+     装修设计 · 3D 户型工作台
+     两套渲染源：true = 上游开源 floorplan-3d（同源 iframe）；
+     false = 自研引擎 ./js/floorplan-3d.js（保留作回退）。
+     方案统一存 properties.attributes.floorplan（写前合并其余 attributes），
+     走现有 PUT /api/properties/:id，零后端改动、不重启 8787。
+     ------------------------------------------------------------
+     上游页只把方案写进 localStorage['huxing-design-v1']，不发任何网络请求。
+     这里把同源 localStorage 当「通信管道」，真正持久化在服务端：
+       进页面/换房源/换房型 → 按所选房源 + 房型把服务端方案预置进管道 → 再建 iframe
+       用户改动 → 上游照旧写管道 → storage 事件 → 350ms 防抖后 PUT 回服务端
+     内置房型：iframe URL 带 ?layout=<id>，上游按 URL 选户型包；
+     三室两厅是上游原始默认，另两套数据在 ./js/floorplan-layouts.js。
+     attributes.floorplan.layout = 当前房型，.plans = 每房型一份独立布置，
+     都跟房源 / 账号走；切房型不会丢其它房型已保存的布置。
+     ============================================================ */
+  const FP_USE_UPSTREAM = true;
+  const FP_STORE = 'huxing-design-v1';
+  const FP_SYNC_DELAY = 350;
+  const FP_PLAN_SOURCE = 'floorplan-3d';
+  // 内置房型清单：id 必须与 public/js/floorplan-layouts.js 的 window.HVT_LAYOUTS 对齐
+  const FP_LAYOUTS = [
+    { id: 'a3b2b', name: '三室两厅两卫' },
+    { id: 'a3b1b2', name: '三室一厅' },
+    { id: 'b2b1b', name: '两室一厅一卫' },
+    { id: 'c1b1b', name: '一室一厅（小户型）' }
+  ];
+  const FP_LAYOUT_DEFAULT = 'a3b2b';
+
+  let fpUpPropId = null;
+  let fpUpLayout = FP_LAYOUT_DEFAULT;
+  let fpUpTimer = null;
+  let fpUpDirty = false;
+  let fpUpStorageHandler = null;
+
+  function fpUpProp() {
+    return (state.properties || []).find((p) => p.id === fpUpPropId) || null;
+  }
+  function fpUpBar(text, cls) {
+    const el = $('fp-up-state');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'fp-state' + (cls ? ' ' + cls : '');
+  }
+  // 自研版旧数据（无 source/state）视作无方案，互不干扰
+  function fpUpSavedPlan(p) {
+    const saved = p ? atOf(p).floorplan : null;
+    return (saved && saved.source === FP_PLAN_SOURCE) ? saved : null;
+  }
+  // 房型 id 也跟着房源走；未知 / 缺失一律回退到默认三室两厅
+  function fpUpLayoutOf(p) {
+    const saved = fpUpSavedPlan(p);
+    const id = saved && saved.layout;
+    return FP_LAYOUTS.some((x) => x.id === id) ? id : FP_LAYOUT_DEFAULT;
+  }
+  // 取指定房型的布置：优先 plans[layout]，兼容旧版单份 state
+  function fpUpSavedState(p, layout) {
+    const saved = fpUpSavedPlan(p);
+    if (!saved) return null;
+    const st = (saved.plans && saved.plans[layout])
+      || (saved.state && (!saved.layout || saved.layout === layout) ? saved.state : null);
+    return (st && Array.isArray(st.furniture)) ? st : null;
+  }
+  // 组装服务端方案：当前房型 + 每房型一份布置 + state 兼容旧版读取
+  function fpUpBuildPlan(p, st, layout) {
+    const saved = fpUpSavedPlan(p);
+    const plans = Object.assign({}, (saved && saved.plans) || {});
+    if (saved && saved.state && !saved.plans) plans[saved.layout || FP_LAYOUT_DEFAULT] = saved.state;
+    if (st) plans[layout] = st;
+    return {
+      version: 2, source: FP_PLAN_SOURCE, layout, plans,
+      state: st || null, updatedAt: new Date().toISOString()
+    };
+  }
+  // 预置管道：有该房型方案写入；没方案清空，让上游回退到该房型默认布置
+  function fpUpSeed(p) {
+    const st = fpUpSavedState(p, fpUpLayout);
+    try {
+      if (st) localStorage.setItem(FP_STORE, JSON.stringify(Object.assign({}, st, { layout: fpUpLayout })));
+      else localStorage.removeItem(FP_STORE);
+    } catch (e) { /* 隐私模式 localStorage 不可用时降级为纯演示 */ }
+  }
+  function fpUpCreateFrame() {
+    const stage = $('fp-up-stage');
+    if (!stage) return;
+    stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
+    const f = document.createElement('iframe');
+    f.className = 'fp-embed';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.5.0';
+    f.title = '装修设计 · 3D 户型';
+    f.setAttribute('allow', 'fullscreen; pointer-lock');
+    f.setAttribute('referrerpolicy', 'no-referrer');
+    stage.appendChild(f);
+  }
+  // 把管道里当前方案写回指定房源；不传则用当前选中房源
+  async function fpUpFlush(targetId) {
+    const id = targetId || fpUpPropId;
+    if (!id) return;
+    const p = (state.properties || []).find((x) => x.id === id);
+    if (!p) return;
+    let st = null;
+    try {
+      const raw = localStorage.getItem(FP_STORE);
+      const o = raw ? JSON.parse(raw) : null;
+      if (o && Array.isArray(o.furniture)) st = o;
+    } catch (e) { /* 数据异常时绝不覆盖服务端 */ }
+    if (!st) return;
+    const layout = st.layout || fpUpLayout;
+    if (!targetId) fpUpBar('● 保存中…', 'dirty');
+    try {
+      await fpSavePlan(p, fpUpBuildPlan(p, st, layout));
+      if (id === fpUpPropId) { fpUpDirty = false; fpUpBar('✅ 已保存到房源', 'saved'); }
+    } catch (e) {
+      if (id === fpUpPropId) fpUpBar('⚠ 保存失败：' + (e && e.message ? e.message : '未知错误'), 'dirty');
+    }
+  }
+  // 只切房型、还没动过家具时也要立刻存下 layout（否则刷新会回到旧房型）
+  async function fpUpPersistLayout() {
+    const p = fpUpProp();
+    if (!p) return;   // 无房源时纯演示，不写服务端
+    fpUpBar('● 保存房型…', 'dirty');
+    try {
+      await fpSavePlan(p, fpUpBuildPlan(p, fpUpSavedState(p, fpUpLayout), fpUpLayout));
+      if (state.view === 'floorplan') {
+        const name = (FP_LAYOUTS.find((x) => x.id === fpUpLayout) || {}).name || fpUpLayout;
+        fpUpBar('✅ 已切换到「' + name + '」，布置按房型分别保存', 'saved');
+      }
+    } catch (e) {
+      fpUpBar('⚠ 房型未保存：' + (e && e.message ? e.message : '未知错误'), 'dirty');
+    }
+  }
+  function fpUpTeardown(flush) {
+    if (fpUpStorageHandler) {
+      window.removeEventListener('storage', fpUpStorageHandler);
+      fpUpStorageHandler = null;
+    }
+    if (fpUpTimer) { clearTimeout(fpUpTimer); fpUpTimer = null; }
+    // 离开视图 / 重复进入前，把未同步的改动补写一次（fetch 不依赖 DOM，可 fire-and-forget）
+    if (flush && fpUpDirty && fpUpPropId) fpUpFlush(fpUpPropId);
+    fpUpDirty = false;
+  }
+  function fpUpWatch() {
+    if (fpUpStorageHandler) return;
+    fpUpStorageHandler = (e) => {
+      if (e.key !== FP_STORE || !e.newValue) return;
+      let ok = false;
+      try { const o = JSON.parse(e.newValue); ok = !!(o && Array.isArray(o.furniture)); } catch (err) { ok = false; }
+      if (!ok) return;
+      fpUpDirty = true;
+      if (!fpUpPropId) { fpUpBar('未关联房源（仅演示）', ''); return; }
+      fpUpBar('● 待同步…', 'dirty');
+      if (fpUpTimer) clearTimeout(fpUpTimer);
+      fpUpTimer = setTimeout(() => { fpUpTimer = null; fpUpFlush(); }, FP_SYNC_DELAY);
+    };
+    window.addEventListener('storage', fpUpStorageHandler);
+  }
+
+  async function renderFloorplanUpstream(c) {
+    destroyFloorplan(); // 清自研引擎，并补写上一轮尚未同步的改动
+    const layoutOpts = FP_LAYOUTS.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+    c.innerHTML = `
+      <div class="fp-embed-wrap fp-up-wrap">
+        <div class="fp-prop-bar">
+          <label for="fp-up-prop-sel">关联房源</label>
+          <select id="fp-up-prop-sel" disabled><option>加载中…</option></select>
+          <label for="fp-up-layout-sel">房型</label>
+          <select id="fp-up-layout-sel">${layoutOpts}</select>
+          <span class="fp-up-hint">方案自动保存到所选房源，换设备登录仍在</span>
+          <span class="fp-state" id="fp-up-state">正在加载…</span>
+          <button type="button" class="btn" id="fp-up-advanced">高级设计</button>
+        </div>
+        <div class="fp-embed-stage" id="fp-up-stage"><div class="fp-loading">正在加载 3D 户型…</div></div>
+      </div>`;
+    try { await ensureProperties(); } catch (e) { /* 后端不可用时降级为纯演示 */ }
+    if (state.view !== 'floorplan' || !$('fp-up-stage')) return; // 加载期间已切走，别覆盖别的页面
+    const props = state.properties || [];
+    if (!fpUpPropId || !props.some((p) => p.id === fpUpPropId)) {
+      fpUpPropId = props.length ? props[0].id : null;
+    }
+    fpUpLayout = fpUpLayoutOf(fpUpProp());   // 房型跟着房源恢复
+    const sel = $('fp-up-prop-sel');
+    sel.disabled = !props.length;
+    sel.innerHTML = props.length
+      ? props.map((p) => `<option value="${esc(p.id)}"${p.id === fpUpPropId ? ' selected' : ''}>${esc(p.title || (p.location && p.location.community) || '未命名房源')}</option>`).join('')
+      : '<option value="">暂无房源（仅演示）</option>';
+    const laySel = $('fp-up-layout-sel');
+    laySel.value = fpUpLayout;
+    sel.onchange = async (e) => {
+      if (fpUpTimer) { clearTimeout(fpUpTimer); fpUpTimer = null; }
+      if (fpUpDirty && fpUpPropId) await fpUpFlush(fpUpPropId); // 先把旧房源的改动存回去
+      fpUpPropId = e.target.value || null;
+      fpUpDirty = false;
+      fpUpLayout = fpUpLayoutOf(fpUpProp());   // 每个房源记住自己的房型
+      laySel.value = fpUpLayout;
+      fpUpSeed(fpUpProp());
+      fpUpCreateFrame();
+      fpUpBar(fpUpPropId ? '✅ 方案随房源保存' : '未关联房源（仅演示）', fpUpPropId ? 'saved' : '');
+    };
+    laySel.onchange = async (e) => {
+      const next = e.target.value;
+      if (!FP_LAYOUTS.some((x) => x.id === next) || next === fpUpLayout) return;
+      if (fpUpTimer) { clearTimeout(fpUpTimer); fpUpTimer = null; }
+      if (fpUpDirty && fpUpPropId) await fpUpFlush(fpUpPropId); // 旧房型的改动先存回去
+      fpUpLayout = next;
+      fpUpDirty = false;
+      fpUpSeed(fpUpProp());      // 有该房型方案就恢复，没有就清空 → 上游用该房型默认布置
+      fpUpCreateFrame();         // iframe 带 ?layout= 全新加载，3D 从零 init
+      if (!fpUpPropId) fpUpBar('未关联房源（仅演示）', '');
+      await fpUpPersistLayout(); // 立刻把房型 id 存到房源，刷新不会回退
+    };
+    fpUpSeed(fpUpProp());
+    fpUpCreateFrame();
+    fpUpWatch();
+    fpUpBar(fpUpPropId ? '✅ 方案随房源保存' : '未关联房源（仅演示）', fpUpPropId ? 'saved' : '');
+    const advBtn = $('fp-up-advanced');
+    if (advBtn) advBtn.onclick = () => window.open(fpAdvancedUrl(), '_blank');
+  }
+
+  // 「高级设计」按钮：永远直接进 3D 设计器（AI 体检面板在那儿）。
+  // 需要（重新）生成方案时，从设计器里 AI 面板的「上传户型图」入口进识别页。
+  function fpAdvancedUrl() {
+    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '');
+  }
+
+  // 统一入口：离开本视图时 renderView 会调 destroyFloorplan()（同时清理同源同步监听）
+  function renderFloorplan(c) {
+    return FP_USE_UPSTREAM ? renderFloorplanUpstream(c) : renderFloorplanSelf(c);
+  }
+
+  let fpInstance = null;
+  let fpPropId = null;
+  let fpDirty = false;
+  let fpReadyHandler = null;
+
+  function destroyFloorplan() {
+    if (fpReadyHandler) {
+      window.removeEventListener('floorplan:ready', fpReadyHandler);
+      fpReadyHandler = null;
+    }
+    if (fpInstance) { try { fpInstance.destroy(); } catch (e) { /* 已销毁 */ } fpInstance = null; }
+    fpDirty = false;
+    fpUpTeardown(true); // 上游 iframe 版：移除 storage 监听 + 补写未同步的改动
+  }
+  function fpProp() { return (state.properties || []).find((p) => p.id === fpPropId) || null; }
+  function fpBar() {
+    const el = $('fp-state');
+    if (!el) return;
+    el.textContent = fpDirty ? '● 有未保存的修改' : (fpProp() ? '✅ 方案随房源保存' : '未关联房源（仅演示）');
+    el.className = 'fp-state ' + (fpDirty ? 'dirty' : 'saved');
+    const b = $('fp-save');
+    if (b) b.disabled = !fpProp();
+  }
+  function fpMarkDirty() { fpDirty = true; fpBar(); }
+  async function fpSavePlan(p, plan) {
+    const a = Object.assign({}, atOf(p));
+    a.floorplan = plan;
+    return syncPropertyRow(await Store.update(p.id, { attributes: a }));
+  }
+  function fpMount() {
+    const host = $('fp-host');
+    if (!host) return;
+    const p = fpProp();
+    const plan = p ? atOf(p).floorplan : null;
+    const boot = () => {
+      if (!document.getElementById('fp-host')) return; // 已切到别的页面
+      if (fpInstance) { try { fpInstance.destroy(); } catch (e) { /* 已销毁 */ } fpInstance = null; }
+      if (!window.Floorplan3D) return;
+      fpInstance = window.Floorplan3D.init(host, {
+        plan: plan || window.Floorplan3D.samplePlan(),
+        toast: (m) => toast(m),
+        onChange: () => fpMarkDirty()
+      });
+      const eng = $('fp-engine');
+      if (eng) eng.textContent = fpInstance.isWebGLOK()
+        ? ' · 3D 引擎就绪（本地 Three.js，离线可用）'
+        : ' · WebGL 不可用，仅面板可编辑';
+      fpBar();
+    };
+    if (window.Floorplan3D) { boot(); return; }
+    host.innerHTML = '<div class="fp-loading">3D 引擎加载中…</div>';
+    fpReadyHandler = () => { fpReadyHandler = null; boot(); };
+    window.addEventListener('floorplan:ready', fpReadyHandler, { once: true });
+  }
+  // 自研引擎版（保留作回退：FP_USE_UPSTREAM=false 时启用）
+  async function renderFloorplanSelf(c) {
+    await ensureProperties();
+    const props = state.properties || [];
+    if (!fpPropId || !props.some((p) => p.id === fpPropId)) fpPropId = props.length ? props[0].id : null;
+    const opts = props.map((p) =>
+      `<option value="${esc(p.id)}"${p.id === fpPropId ? ' selected' : ''}>${esc(p.title || (p.location && p.location.community) || '未命名房源')}</option>`
+    ).join('');
+    c.innerHTML = `
+      <div class="fp-page">
+        <div class="fp-head">
+          <div class="fp-head-left">
+            <h3>装修设计 <small>3D 户型演示 · 一期</small></h3>
+            <label class="fp-prop">关联房源
+              <select id="fp-prop-sel" ${props.length ? '' : 'disabled'}>
+                ${props.length ? opts : '<option value="">暂无房源</option>'}
+              </select>
+            </label>
+          </div>
+          <div class="fp-head-right">
+            <span class="fp-state" id="fp-state"></span>
+            <button class="btn sm" id="fp-reset" type="button">重置示例</button>
+            <button class="btn sm primary" id="fp-save" type="button">保存方案</button>
+          </div>
+        </div>
+        <div class="fp-note">
+          一期使用内置示例户型演示 3D 浏览、家具摆放、拆墙与地面造价；二期将支持为每套房源录入自己的户型。
+          方案保存在所选房源上，换设备登录仍在。<span class="muted" id="fp-engine"></span>
+        </div>
+        <div id="fp-host"></div>
+      </div>`;
+    $('fp-prop-sel').onchange = (e) => {
+      if (fpDirty && !confirm('当前修改尚未保存，切换房源会丢失，继续吗？')) {
+        e.target.value = fpPropId || ''; return;
+      }
+      fpPropId = e.target.value || null;
+      fpDirty = false;
+      fpMount(); fpBar();
+    };
+    $('fp-reset').onclick = () => {
+      if (!window.Floorplan3D || !fpInstance) return;
+      if (!confirm('恢复为内置示例户型？当前未保存的修改会丢失。')) return;
+      fpInstance.setPlan(window.Floorplan3D.samplePlan());
+      fpMarkDirty();
+      toast('已恢复示例户型');
+    };
+    $('fp-save').onclick = async () => {
+      const p = fpProp();
+      if (!p || !fpInstance) { toast('请先到房源列表录入一套房源'); return; }
+      try {
+        await fpSavePlan(p, fpInstance.getPlan());
+        fpDirty = false; fpBar();
+        toast('装修方案已保存到该房源', true);
+      } catch (e) {
+        toast('保存失败：' + (e && e.message ? e.message : '未知错误'));
+      }
+    };
+    fpBar();
+    fpMount();
   }
 
   // ---------- 列表 ----------
@@ -776,7 +1277,8 @@
     const showFav = opts.showFav !== false;
     const showDetail = opts.showDetail !== false;
     const media = p.media || {}, loc = p.location || {}, attr = p.attributes || {}, tran = p.transaction || {};
-    const firstImg = (media.images && media.images[0]) || '';
+    const imgs = (media.images || []).filter(Boolean);
+    const coverImgs = imgs.length ? imgs : [presetCover(p.id)];
     const status = opts.statusText || tran.status || '在售';
     const statusCls = status === '在售' ? 'st-ok' : (status === '已售' ? 'st-sold' : (status === '已下架' ? 'st-off' : (status === '待看' ? 'st-await' : 'st-bought')));
     const title = p.title || loc.community || '未命名';
@@ -785,26 +1287,40 @@
     const tp = parseFloat(tran.totalPrice), ar = parseFloat(attr.area);
     const unit = (tp > 0 && ar > 0) ? Math.round(tp * 10000 / ar) : null;
     const picked = mode === 'compare' ? state.selected.has(p.id) : (mode === 'batch' ? state.batchSel.has(p.id) : false);
+    const priceTxt = tran.totalPrice ? esc(tran.totalPrice) + ' 万' : '—';
+    const layoutTxt = esc(attr.layout || '—');
+    const areaTxt = attr.area ? esc(attr.area) : '—';
+    const locFull = locTxt || '未填写地址';
+    // 左下角媒体标签：按需显示（贝壳风格）——图片 / 户型 / VR
+    const hasImgs = imgs.length > 0;
+    const hasFloor = (media.floorPlans || []).filter(Boolean).length > 0;
+    const hasVr = mediaLinksOf(p).some((x) => x.kind === 'vr');
+    const mediaTabs = [
+      hasImgs ? `<button type="button" class="cm-tab" data-cmedia="images" data-cpid="${esc(p.id)}" title="查看房源图片">图片</button>` : '',
+      hasFloor ? `<button type="button" class="cm-tab" data-cmedia="floor" data-cpid="${esc(p.id)}" title="查看户型图">户型</button>` : '',
+      hasVr ? `<button type="button" class="cm-tab" data-cmedia="vr" data-cpid="${esc(p.id)}" title="查看 VR 看房">VR</button>` : ''
+    ].filter(Boolean).join('');
     return `<div class="card list-card">
-      <div class="card-cover">
+      <div class="card-cover${coverImgs.length > 1 ? ' has-multi' : ''}">
         <div class="cover-ph">${esc(ph)}</div>
-        ${firstImg ? `<img src="${esc(firstImg)}" alt="" onerror="this.style.display='none'"/>` : `<img src="${esc(presetCover(p.id))}" alt=""/>`}
+        <div class="cover-scroll"${showDetail ? ` data-cover-detail="${p.id}"` : ''}>${coverImgs.map((src) => `<img src="${esc(src)}" alt="看房图片" loading="lazy" onerror="this.style.display='none'"/>`).join('')}</div>
+        ${mediaTabs ? `<div class="cover-media-tabs">${mediaTabs}</div>` : ''}
         ${mode ? `<label class="cover-pick" title="${mode === 'compare' ? '勾选以对比' : '勾选以批量操作'}"><input type="checkbox" data-pick="${p.id}" ${picked ? 'checked' : ''}/></label>` : ''}
         ${showFav ? `<button class="fav-star ${p.favorite ? 'on' : ''}" data-fav="${p.id}" title="收藏">${p.favorite ? '★' : '☆'}</button>` : ''}
       </div>
       <div class="card-body">
-        <h3 class="card-title"${showDetail ? ` data-detail="${p.id}" title="点击查看详情"` : ''}>${esc(title)}</h3>
-        <div class="card-sub">${esc(locTxt || '未填写地址')}</div>
+        <h3 class="card-title"${showDetail ? ` data-detail="${p.id}" title="${esc(title)}（点击查看详情）"` : ` title="${esc(title)}"`}>${esc(title)}</h3>
+        <div class="card-sub" title="${esc(locFull)}">${esc(locFull)}</div>
         <div class="card-metrics">
-          <div class="metric"><span class="metric-num metric-price">${tran.totalPrice ? esc(tran.totalPrice) + ' 万' : '—'}</span><span class="metric-label">总价</span></div>
-          <div class="metric"><span class="metric-num">${esc(attr.layout || '—')}</span><span class="metric-label">户型</span></div>
-          <div class="metric"><span class="metric-num">${attr.area ? esc(attr.area) : '—'}</span><span class="metric-label">面积 ㎡</span></div>
+          <div class="metric" title="总价 ${priceTxt}"><span class="metric-num metric-price">${priceTxt}</span><span class="metric-label">总价</span></div>
+          <div class="metric" title="户型 ${layoutTxt}"><span class="metric-num">${layoutTxt}</span><span class="metric-label">户型</span></div>
+          <div class="metric" title="面积 ${areaTxt} ㎡"><span class="metric-num">${areaTxt}</span><span class="metric-label">面积 ㎡</span></div>
         </div>
         <div class="card-foot">
-          <div class="card-tags">${(state.selected && state.selected.has(p.id)) ? `<span class="tag tag-compare">对比中</span>` : ''}${unit != null ? `<span class="card-unit">${unit.toLocaleString('zh-CN')} 元/㎡</span>` : ''}${state.demandMatch ? `<span class="tag" title="${esc((demandMatch(p).reasons || []).join('、'))}">匹配 ${demandMatch(p).score}%</span>` : ''}${tran.sourcePlatform ? `<span class="tag">${esc(tran.sourcePlatform)}</span>` : ''}${tran.viewingDate ? `<span class="tag">看房 ${esc(tran.viewingDate)}</span>` : ''}<span class="tag ${statusCls}">${esc(status)}</span></div>
+          <div class="card-tags">${(state.selected && state.selected.has(p.id)) ? `<span class="tag tag-compare">对比中</span>` : ''}${unit != null ? `<span class="card-unit" title="${unit.toLocaleString('zh-CN')} 元/㎡">${unit.toLocaleString('zh-CN')} 元/㎡</span>` : ''}${state.demandMatch ? `<span class="tag" title="${esc((demandMatch(p).reasons || []).join('、'))}">匹配 ${demandMatch(p).score}%</span>` : ''}${tran.sourcePlatform ? `<span class="tag tag-src" title="来源平台：${esc(tran.sourcePlatform)}">${esc(tran.sourcePlatform)}</span>` : ''}${tran.viewingDate ? `<span class="tag" title="看房日期：${esc(tran.viewingDate)}">看房 ${esc(tran.viewingDate)}</span>` : ''}<span class="tag ${statusCls}" title="状态：${esc(status)}">${esc(status)}</span></div>
         </div>
         <div class="card-foot">
-          <div class="card-sub">评分 ${computeScore(p)}</div>
+          <div class="card-sub" title="评分 ${computeScore(p)}">评分 ${computeScore(p)}</div>
           <div class="card-ops">${actions}</div>
         </div>
       </div>
@@ -867,6 +1383,7 @@
     const matched = (p) => {
       const loc = p.location || {}, attr = p.attributes || {}, tran = p.transaction || {}, fac = p.facilities || {};
       if (f.q) { const q = f.q.toLowerCase(); const hay = [p.title, loc.community, loc.district, tran.houseNumber, tran.agentName, tran.agentPhone].join(' ').toLowerCase(); if (!hay.includes(q)) return false; }
+      if (f.city && (loc.city || '') !== f.city) return false;
       if (f.district && (loc.district || '') !== f.district) return false;
       if (f.platform && (tran.sourcePlatform || '') !== f.platform) return false;
       if (f.layout && (attr.layout || '') !== f.layout) return false;
@@ -907,6 +1424,8 @@
     const pageItems = shown.slice(pageStart, pageStart + state.pageSize);
     const opt = (arr, allLabel) => ['', ...Array.from(new Set(arr.filter(Boolean)))]
       .map((d) => `<option value="${esc(d)}" ${f[allLabel.k] === d ? 'selected' : ''}>${d || allLabel.t}</option>`).join('');
+    // 筛选值一律只从「已录房源」里动态收集，列表里没有的省市/区域不会出现在下拉里
+    const cities = all.map((p) => (p.location && p.location.city) || '');
     const districts = all.map((p) => (p.location && p.location.district) || '');
     const platforms = all.map((p) => (p.transaction && p.transaction.sourcePlatform) || '');
     const layouts = all.map((p) => (p.attributes && p.attributes.layout) || '');
@@ -929,7 +1448,14 @@
       <button class="btn" id="btn-weights">评分权重</button>
       <button class="btn" id="btn-batch-del">批量删除(${state.batchSel.size})</button>
       <button class="btn" id="btn-batch-status">批量改状态</button>
-      <button class="btn" id="btn-export">导出CSV</button>
+      <span class="dd">
+        <button class="btn" id="btn-export">导出CSV</button>
+        <button class="btn dd-caret" id="export-toggle" title="更多导出选项" aria-label="更多导出选项">▾</button>
+        <span class="dd-menu hidden" id="export-menu">
+          <button class="dd-item" id="btn-export-csv2">导出 CSV（表格）</button>
+          <button class="dd-item" id="btn-export-json">导出 JSON（完整数据）</button>
+        </span>
+      </span>
       <input type="file" id="csv-file" accept=".csv" style="display:none"/>
     </div>`;
     const pickBar = state.pickMode ? `<div class="pick-bar">
@@ -939,6 +1465,7 @@
     </div>` : '';
     const statusOpts = ['', '在售', '已售', '已下架', '待看', '已购'].map((s) => `<option value="${esc(s)}" ${f.status === s ? 'selected' : ''}>${s || '全部状态'}</option>`).join('');
     const sortOpts = [['time', '时间倒序'], ['score', '综合评分']].map(([v, t]) => `<option value="${v}" ${f.sort === v ? 'selected' : ''}>${t}</option>`).join('');
+    // 城市 / 排序（时间倒序）已移入高级搜索；主筛选栏只留高频项，避免挤到第二排
     const toolbar = `<div class="toolbar">
       <select id="f-district" class="tb-in">${opt(districts, { k: 'district', t: '全部区域' })}</select>
       <select id="f-platform" class="tb-in">${opt(platforms, { k: 'platform', t: '全部平台' })}</select>
@@ -946,16 +1473,16 @@
       <select id="f-orientation" class="tb-in">${opt(orientations, { k: 'orientation', t: '全部朝向' })}</select>
       <select id="f-floor" class="tb-in">${opt(floors, { k: 'floor', t: '全部楼层' })}</select>
       <select id="f-status" class="tb-in">${statusOpts}</select>
-      <select id="f-sort" class="tb-in">${sortOpts}</select>
       <div class="tb-right">
         <input id="f-q" class="tb-in tb-search" placeholder="搜索小区/编号/中介" value="${esc(f.q)}"/>
-        <button class="btn view-mode-btn" id="btn-view-mode" title="${state.listMode === 'table' ? '切换为卡片显示' : '切换为列表显示'}">${state.listMode === 'table' ? '▦ 卡片' : '☰ 列表'}</button>
-        <button class="btn" id="btn-adv">高级搜索</button>
+        ${viewModeBtn('btn-view-mode')}
+        <button class="btn btn-icon" id="btn-adv" title="高级搜索（含城市 / 排序等）" aria-label="高级搜索">${ICON_FILTER}</button>
       </div>
     </div>`;
     const advPanel = `<div class="adv-panel ${state.advOpen ? '' : 'hidden'}" id="adv-panel">
       <div class="adv-grid">
         <div class="field"><label>关键词</label><input id="a-q" value="${esc(f.q)}" placeholder="小区 / 编号 / 中介"/></div>
+        <div class="field"><label>城市</label><select id="a-city">${opt(cities, { k: 'city', t: '全部城市' })}</select></div>
         <div class="field"><label>区域</label><select id="a-district">${opt(districts, { k: 'district', t: '全部区域' })}</select></div>
         <div class="field"><label>平台</label><select id="a-platform">${opt(platforms, { k: 'platform', t: '全部平台' })}</select></div>
         <div class="field"><label>户型</label><select id="a-layout">${opt(layouts, { k: 'layout', t: '全部户型' })}</select></div>
@@ -1061,6 +1588,15 @@
       batchSetStatus(c);
     });
     safe('btn-export', () => doExportCsv());
+    safe('btn-export-csv2', () => doExportCsv());
+    safe('btn-export-json', () => doExportJson());
+    // 导出下拉菜单
+    safe('export-toggle', () => {
+      const m = document.getElementById('export-menu');
+      if (m) m.classList.toggle('hidden');
+    });
+    const expMenu = document.getElementById('export-menu');
+    if (expMenu) expMenu.addEventListener('click', () => expMenu.classList.add('hidden'));
     safe('btn-import', () => document.getElementById('csv-file').click());
     safe('btn-weights', () => { openWeightsModal(); });
     safe('btn-view-mode', () => {
@@ -1109,9 +1645,10 @@
       if (nq) { nq.focus(); nq.setSelectionRange(nq.value.length, nq.value.length); }
       const gs2 = document.getElementById('global-search'); if (gs2) gs2.value = e.target.value;
     };
+    // 城市 / 排序已移入高级搜索，主筛选栏不再有 f-city / f-sort
     bindSel('f-district', 'district'); bindSel('f-platform', 'platform');
     bindSel('f-layout', 'layout'); bindSel('f-orientation', 'orientation'); bindSel('f-floor', 'floor');
-    bindSel('f-status', 'status'); bindSel('f-sort', 'sort');
+    bindSel('f-status', 'status');
     const cf = document.getElementById('csv-file'); if (cf) cf.onchange = (e) => doImportCsv(e, c);
     // 只看收藏：开关式筛选
     safe('btn-fav-only', () => {
@@ -1135,7 +1672,7 @@
       const gv = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
       const gc = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
       Object.assign(state.filters, {
-        q: gv('a-q'), district: gv('a-district'), platform: gv('a-platform'),
+        q: gv('a-q'), city: gv('a-city'), district: gv('a-district'), platform: gv('a-platform'),
         layout: gv('a-layout'), orientation: gv('a-orientation'), floor: gv('a-floor'),
         status: gv('a-status'), decoration: gv('a-decoration'), sort: gv('a-sort') || 'time',
         totalMin: gv('a-totalMin'), totalMax: gv('a-totalMax'),
@@ -1150,7 +1687,7 @@
       toast('已应用筛选条件', true);
     });
     safe('adv-reset', () => {
-      state.filters = { q: '', district: '', platform: '', status: '', sort: 'time',
+      state.filters = { q: '', city: '', district: '', platform: '', status: '', sort: 'time',
         layout: '', orientation: '', floor: '',
         totalMin: '', totalMax: '', areaMin: '', areaMax: '',
         decoration: '', subwayMax: '', viewingFrom: '', viewingTo: '',
@@ -1160,6 +1697,18 @@
       toast('筛选条件已重置', true);
     });
     c.querySelectorAll('[data-detail]').forEach((b) => b.onclick = () => renderDetail(c, b.dataset.detail));
+    // 封面图片点击进详情：用按下/抬起位移判断，横向拖动翻图时不误触
+    c.querySelectorAll('[data-cover-detail]').forEach((box) => {
+      let sx = 0, sy = 0, moved = false;
+      box.addEventListener('pointerdown', (e) => { sx = e.clientX; sy = e.clientY; moved = false; });
+      box.addEventListener('pointermove', (e) => { if (Math.abs(e.clientX - sx) > 8 || Math.abs(e.clientY - sy) > 8) moved = true; });
+      box.addEventListener('click', (e) => {
+        if (moved) { e.preventDefault(); return; }
+        // 收藏星标 / 勾选框等浮层不触发详情
+        if (e.target.closest('.fav-star, .cover-pick')) return;
+        renderDetail(c, box.dataset.coverDetail);
+      });
+    });
     c.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => renderForm(c, b.dataset.edit));
     c.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => doCopy(b.dataset.copy, c));
     c.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => doDelete(b.dataset.del));
@@ -1338,7 +1887,8 @@
     const payTable = `<div style="margin-top:12px"><div class="muted" style="font-size:12px;margin:0 0 6px">付款节点（按行）</div>
       <div class="reno-table-wrap"><table class="reno-table"><thead><tr><th>#</th><th>节点</th><th>比例</th><th>金额</th><th>计划日期</th><th>备注</th></tr></thead><tbody>${payRows}</tbody></table></div></div>`;
     const matRows = r.materials.length ? r.materials.map((x) => `<tr><td>${esc(x.category || '—')}</td><td>${esc(x.brand || '—')}</td><td>${esc(x.model || '—')}</td><td>${esc(x.qty || '—')}</td><td>${x.unitPrice === '' || x.unitPrice == null ? '—' : esc(x.unitPrice)}</td><td>${x.amount === '' || x.amount == null ? '—' : esc(x.amount)}</td><td>${esc(x.channel || '—')}</td><td>${x.arrived ? '✓ 已到货' : '—'}</td></tr>`).join('') : '<tr><td colspan="8" class="muted" style="text-align:center;padding:14px">还没有主材记录</td></tr>';
-    const mediaHtml = RENO_MEDIA_META.map((mm) => `<div class="reno-media"><h4>${esc(mm.label)}</h4>${(m[mm.k] && m[mm.k].length) ? '<div class="media-list lg">' + m[mm.k].map((u) => `<img src="${esc(u)}" alt=""/>`).join('') + '</div>' : '<div class="muted">无</div>'}</div>`).join('');
+    // 装修页图片也走详情页同一套 mediaListHTML()，点击同样能放大左右切换
+    const mediaHtml = RENO_MEDIA_META.map((mm) => `<div class="reno-media"><h4>${esc(mm.label)}</h4>${mediaListHTML(asImages(m[mm.k]), mm.label)}</div>`).join('');
     return `<div class="detail-grid">
         <div>
           <div class="detail-box" style="margin-bottom:16px"><h3 style="margin-top:0">① 基本信息</h3>${fieldRows(RENO_BASIC_FIELDS, b)}</div>
@@ -1769,7 +2319,7 @@
       <span class="help-q" data-tip="只显示已标记为购入的房源 · 点卡片标题看购房与装修信息">?</span>
       <div class="spacer"></div>
       <input id="p-q" class="tb-in tb-search" placeholder="搜索小区 / 编号 / 购房价" value="${esc(state.pQ)}"/>
-      <button class="btn view-mode-btn" id="p-view-mode" title="${state.listMode === 'table' ? '切换为卡片显示' : '切换为列表显示'}">${state.listMode === 'table' ? '▦ 卡片' : '☰ 列表'}</button>
+      ${viewModeBtn('p-view-mode')}
       <button class="btn" id="p-back">返回房源列表</button></div>`;
     const actions = (p) => `<button class="op-btn" data-p-detail="${p.id}">详情</button><button class="op-btn" data-p-reno="${p.id}">装修信息</button>`;
     const body = state.listMode === 'table'
@@ -1896,7 +2446,7 @@
     const rowHTML = ({ p, it }) => {
       const g = it.budget || {}, b = it.basic || {}, k = renoKey({ p, it });
       const pt = p.title || (p.location && p.location.community) || '未命名房源';
-      const area = [p.location && p.location.city, p.location && p.location.district].filter(Boolean).join(' / ');
+      const area = [p.location && p.location.province, p.location && p.location.city, p.location && p.location.district].filter(Boolean).join(' / ');
       return `<tr>
         <td class="pl-pick"><input type="checkbox" data-rc="${esc(k)}" ${state.renoCompareSel.has(k) ? 'checked' : ''}/></td>
         <td class="pl-title"><span class="pl-link" data-rl-detail="${esc(p.id)}" title="查看房源详情">${esc(pt)}</span><span class="pl-sub">${esc(area)}</span></td>
@@ -2001,7 +2551,7 @@
     c.innerHTML = '<div class="empty">加载中…</div>';
     let list;
     try { list = await Store.trash(); } catch (e) { c.innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>'; return; }
-    const head = crumb(['看房记录', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div><button class="btn view-mode-btn" id="trash-view-mode" title="${state.listMode === 'table' ? '切换为卡片显示' : '切换为列表显示'}">${state.listMode === 'table' ? '▦ 卡片' : '☰ 列表'}</button><button class="btn" id="trash-back">返回列表</button></div>`;
+    const head = crumb(['看房记录', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div>${viewModeBtn('trash-view-mode')}<button class="btn" id="trash-back">返回列表</button></div>`;
     const bindCommon = () => {
       watchCardsCenter();
       const t = document.getElementById('trash-back'); if (t) t.onclick = () => setView('list');
@@ -2230,12 +2780,33 @@
     requestAnimationFrame(() => m.classList.add('open'));
   }
 
-  // 导出 CSV
+  // 导出 CSV（表格字段，适合 Excel）
   function doExportCsv() {
     const list = state.properties;
     if (!list.length) { toast('没有可导出的数据'); return; }
     downloadCsv('看房记录_' + new Date().toISOString().slice(0, 10) + '.csv', toCsv(list));
-    toast('已导出 ' + list.length + ' 条', true);
+    toast('已导出 ' + list.length + ' 条 CSV', true);
+  }
+
+  // 导出 JSON（完整数据）：直接序列化房源原始对象，保留 CSV 会丢的图片 / 视频 / 外链 /
+  // 收藏 / 评分要素 / 跟进等所有字段，另一个系统拿到可完整还原。带 version + 导出时间便于识别。
+  function doExportJson() {
+    const list = state.properties;
+    if (!list.length) { toast('没有可导出的数据'); return; }
+    const payload = {
+      format: 'house-view-tracker',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      count: list.length,
+      properties: list
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = '看房记录_完整数据_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast('已导出 ' + list.length + ' 条完整数据（JSON）', true);
   }
 
   // 导入 CSV
@@ -2262,7 +2833,7 @@
     const modal = $('demand-modal');
     if (!modal) { // 兜底：无弹窗节点时跳设置页
       toast('请先在「设置 → 购房需求」填写你的意向要求');
-      setView('profile');
+      openSettingsModal('demand');
       return;
     }
     const cur = (state.user && state.user.demand) || {};
@@ -2288,8 +2859,9 @@
       toast('已退出需求匹配', true);
     };
     $('dm-apply').onclick = async () => {
-      // 最晚提醒配置不经过弹窗，原样保留，避免整体覆盖时丢失
-      const demand = {
+      // demand 是整体覆盖：先合并旧值，保住「看房驾驶 / 购房计划」子键与本弹窗不展示的字段
+      const base = demandNow();
+      const demand = Object.assign({}, base, {
         budgetMax: parseFloat($('dm-budgetMax').value) || '',
         districts: $('dm-districts').value.trim(),
         layout: $('dm-layout').value.trim(),
@@ -2298,9 +2870,9 @@
         needSubway: $('dm-subway').checked,
         needSchool: $('dm-school').checked,
         notes: $('dm-notes').value.trim(),
-        deadlineEnabled: !!cur.deadlineEnabled,
-        deadlineDate: cur.deadlineDate || ''
-      };
+        deadlineEnabled: !!base.deadlineEnabled,
+        deadlineDate: base.deadlineDate || ''
+      });
       try {
         const r = await Api.updateProfile({ demand });
         state.user = r.data.user;
@@ -2403,7 +2975,7 @@
           '<button class="btn primary" id="map-go-settings">前往设置配置</button>' +
         '</div>';
       const gb = $('map-go-settings');
-      if (gb) gb.onclick = () => setView('profile');
+      if (gb) gb.onclick = () => openSettingsModal('map');
       return;
     }
     const dest = state.commuteDest;
@@ -2449,7 +3021,11 @@
     if (btn && !silent) { btn.disabled = true; btn.textContent = '计算中…'; }
     try {
       const AMap = await Geo.ensureAmap();
-      const dest = await Geo.geocode(destName, '成都');
+      // 通勤终点按当前筛选城市（或已有房源所在城市）限定，不再写死成都
+      const hintCity = (state.filters && state.filters.city)
+        || ((state.properties.find((x) => x.geo && x.location && x.location.city) || {}).location || {}).city
+        || '全国';
+      const dest = await Geo.geocode(destName, hintCity);
       state.commuteDest = { lng: dest.lng, lat: dest.lat, name: destName };
       if (typeof AMap.Driving !== 'function') {
         await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('Driving 插件加载超时')), 8000); AMap.plugin('AMap.Driving', () => { clearTimeout(t); res(); }); });
@@ -2543,7 +3119,7 @@
         return [loc.subwayStation, loc.subwayDistance != null ? loc.subwayDistance + ' m' : ''].filter(Boolean).join(' · ') || '—';
       }],
       ['看房日期', (p) => (p.transaction && p.transaction.viewingDate) || '—'],
-      ['城市/区域', (p) => [p.location && p.location.city, p.location && p.location.district].filter(Boolean).join(' / ') || '—'],
+      ['省 / 市 / 区县', (p) => [p.location && p.location.province, p.location && p.location.city, p.location && p.location.district].filter(Boolean).join(' / ') || '—'],
       ['小区', (p) => (p.location && p.location.community) || '—'],
       ['详细地址', (p) => (p.location && p.location.address) || '—'],
       ['户型', (p) => (p.attributes && p.attributes.layout) || '—'],
@@ -2670,7 +3246,9 @@
     const loc = p.location || {}, attr = p.attributes || {}, media = p.media || {}, tran = p.transaction || {}, fac = p.facilities || {};
     const fm = {
       images: [...(media.images || [])], videos: [...(media.videos || [])],
-      floorPlans: [...(media.floorPlans || [])], environment: [...(media.environment || [])]
+      floorPlans: [...(media.floorPlans || [])], environment: [...(media.environment || [])],
+      // 一键导入带来的外链视频 / VR 不在表单里显示，但保存时必须原样保留
+      links: (media.links || []).map((x) => Object.assign({}, x))
     };
     const chk = (v) => v ? 'checked' : '';
 
@@ -2694,8 +3272,21 @@
               </div>
             </div>
             <div class="form-grid">
-              <div class="field"><label>城市</label><input id="f-city" value="${esc(loc.city || '成都')}"/></div>
-              <div class="field"><label>区域</label><input id="f-district" value="${esc(loc.district || '')}"/></div>
+              <div class="field full region-field" id="rg-field">
+                <label>省 / 市 / 区县</label>
+                <div class="region-picker">
+                  <input id="rg-search" class="tb-in" autocomplete="off" placeholder="输入名称搜索，如 宜宾、高新区、浦东新区"/>
+                  <div class="region-results hidden" id="rg-results"></div>
+                </div>
+                <div class="region-chips" id="rg-chips"></div>
+                <input type="hidden" id="f-province" value="${esc(loc.province || '')}"/>
+                <input type="hidden" id="f-city" value="${esc(loc.city || '')}"/>
+                <input type="hidden" id="f-district" value="${esc(loc.district || '')}"/>
+                <div class="region-custom">
+                  <input id="rg-custom" class="tb-in" placeholder="其它区域，手填"/>
+                  <button type="button" class="btn sm" id="rg-custom-apply">填入区域</button>
+                </div>
+              </div>
               <div class="field"><label>小区名称</label><input id="f-community" value="${esc(loc.community || '')}"/></div>
               <div class="field"><label>详细地址 / 位置描述</label><input id="f-address" value="${esc(loc.address || '')}"/></div>
               <div class="field"><label>最近地铁站</label><input id="f-subway-station" value="${esc(loc.subwayStation || '')}"/></div>
@@ -2875,7 +3466,7 @@
 
     function showCoord() {
       const g = state.formGeo;
-      $('coord-text').textContent = g && g.lng ? `经度 ${g.lng.toFixed(5)}，纬度 ${g.lat.toFixed(5)}（来源：${g.source || '未知'}）${g.formattedAddress ? ' · ' + g.formattedAddress : ''}` : '尚未定位';
+      $('coord-text').textContent = g && g.lng ? `经度 ${fmtCoord(g.lng)}，纬度 ${fmtCoord(g.lat)}（来源：${g.source || '未知'}）${g.formattedAddress ? ' · ' + g.formattedAddress : ''}` : '尚未定位';
     }
     showCoord();
 
@@ -2964,6 +3555,71 @@
       e.preventDefault(); e.stopPropagation();
     });
 
+    // ===== 省 / 市 / 区县可搜索选择器：选中末级自动带出上级，不用逐级点 =====
+    (function wireRegionPicker() {
+      const sEl = $('rg-search'), rEl = $('rg-results'), cEl = $('rg-chips');
+      if (!sEl || !rEl || !cEl || !window.Regions) return;
+      const hp = $('f-province'), hc = $('f-city'), hd = $('f-district');
+      const hide = () => rEl.classList.add('hidden');
+      const paintChips = () => {
+        let parts = [hp.value, hc.value, hd.value].filter(Boolean);
+        if (parts.length >= 2 && parts[0] === parts[1]) parts = [parts[0]].concat(parts.slice(2));
+        cEl.innerHTML = parts.length
+          ? parts.map((x) => '<span class="region-chip">' + esc(x) + '</span>').join('<span class="region-sep">›</span>')
+            + '<button type="button" class="region-clear" id="rg-clear">清除</button>'
+          : '<span class="region-hint">未选择，输入上方关键词搜索</span>';
+        const clr = $('rg-clear');
+        if (clr) clr.onclick = () => {
+          hp.value = ''; hc.value = ''; hd.value = '';
+          paintChips(); refreshPreview();
+        };
+      };
+      const show = (q) => {
+        const items = Regions.search(q, 40);
+        if (!items.length) {
+          rEl.innerHTML = '<div class="region-empty">没有匹配的地区，可用下方「手填区域」</div>';
+        } else {
+          rEl.innerHTML = items.map((x, i) =>
+            '<button type="button" class="region-item" data-rg="' + i + '">' + esc(Regions.label(x)) + '</button>').join('');
+          rEl.querySelectorAll('[data-rg]').forEach((b) => {
+            b.onclick = () => {
+              const x = items[parseInt(b.dataset.rg, 10)];
+              hp.value = x.p || ''; hc.value = x.c || ''; hd.value = x.d || '';
+              sEl.value = ''; hide(); paintChips(); refreshPreview();
+            };
+          });
+        }
+        rEl.classList.remove('hidden');
+      };
+      sEl.addEventListener('focus', () => show(sEl.value));
+      sEl.addEventListener('input', () => show(sEl.value));
+      sEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { hide(); sEl.blur(); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const first = rEl.querySelector('.region-item');
+          if (first) first.click();
+        }
+      });
+      // 点控件外收起；每次重绘表单只保留一个全局监听，避免累积
+      if (window.__rgDocHandler) document.removeEventListener('click', window.__rgDocHandler);
+      window.__rgDocHandler = (e) => {
+        const f = $('rg-field');
+        if (!f || !f.contains(e.target)) hide();
+      };
+      document.addEventListener('click', window.__rgDocHandler);
+      // 国标不收录的各类功能区 / 新区，允许直接手填区域（省、市仍按已选值）
+      const ca = $('rg-custom-apply');
+      if (ca) ca.onclick = () => {
+        const v = $('rg-custom').value.trim();
+        if (!v) { toast('请先输入区域名称'); return; }
+        hd.value = v; $('rg-custom').value = '';
+        paintChips(); refreshPreview(); toast('已填入区域：' + v, true);
+      };
+      paintChips();
+      state.rgSync = paintChips; // 供智能解析 / AI 录入回填后同步显示
+    })();
+
     $('auto-locate').onclick = async () => {
       const city = $('f-city').value.trim();
       const text = [$('f-community').value, $('f-district').value, $('f-address').value].filter(Boolean).join(' ');
@@ -2990,8 +3646,11 @@
       const text = $('f-ai').value.trim();
       if (!text) { toast('请先粘贴房源文字'); return; }
       const r = parseAiText(text);
-      if (r.location.community) $('f-community').value = r.location.community;
+      if (r.location.province) $('f-province').value = r.location.province;
+      if (r.location.city) $('f-city').value = r.location.city;
       if (r.location.district) $('f-district').value = r.location.district;
+      if (state.rgSync) state.rgSync();
+      if (r.location.community) $('f-community').value = r.location.community;
       if (r.location.address) $('f-address').value = r.location.address;
       if (r.attributes.layout) $('f-layout').value = r.attributes.layout;
       if (r.attributes.area != null) $('f-area').value = r.attributes.area;
@@ -3065,7 +3724,7 @@
       function renderAIResult(f, warnings) {
         const loc = f.location || {}, attr = f.attributes || {}, tran = f.transaction || {};
         const rows = [
-          ['城市', loc.city], ['区域', loc.district], ['小区', loc.community], ['地址', loc.address],
+          ['省份', loc.province], ['城市', loc.city], ['区域', loc.district], ['小区', loc.community], ['地址', loc.address],
           ['户型', attr.layout], ['面积(㎡)', attr.area], ['朝向', attr.orientation], ['楼层', attr.floor],
           ['总价(万)', tran.totalPrice], ['单价(元/㎡)', tran.unitPrice],
           ['中介', tran.agentName], ['电话', tran.agentPhone], ['微信', tran.wechat],
@@ -3090,6 +3749,7 @@
           if (ov || !el.value.trim()) el.value = (val == null ? '' : String(val));
         };
         const loc = f.location || {}, attr = f.attributes || {}, tran = f.transaction || {};
+        set('f-province', loc.province);
         set('f-city', loc.city);
         set('f-district', loc.district);
         set('f-community', loc.community);
@@ -3105,6 +3765,16 @@
         set('f-wechat', tran.wechat);
         set('f-platform', tran.sourcePlatform);
         set('f-houseno', tran.houseNumber);
+        // AI 结果常只给「市 / 区县」，按行政区划表反查把省份补上
+        if (window.Regions && !$('f-province').value.trim()) {
+          const pc = Regions.provinceByCity($('f-city').value.trim())
+            || (Regions.lookupDistrict($('f-district').value.trim())[0] || null);
+          if (pc) {
+            $('f-province').value = pc.p;
+            if (!$('f-city').value.trim()) $('f-city').value = pc.c;
+          }
+        }
+        if (state.rgSync) state.rgSync();
         if (f.notes) {
           const n = $('f-notes');
           if (n && (ov || !n.value.trim())) n.value = (n.value.trim() ? n.value + '\n' : '') + f.notes;
@@ -3171,6 +3841,7 @@
       const row = {
         title: $('f-community').value.trim() || [$('f-city').value.trim(), $('f-district').value.trim()].filter(Boolean).join(''),
         location: {
+          province: $('f-province').value.trim(),
           city: $('f-city').value.trim(), district: $('f-district').value.trim(),
           community: $('f-community').value.trim(), address: $('f-address').value.trim(),
           subwayStation: $('f-subway-station').value.trim(), subwayDistance: num($('f-subway-dist').value)
@@ -3188,7 +3859,8 @@
         }),
         media: {
           images: fm.images.slice(), videos: fm.videos.slice(),
-          floorPlans: fm.floorPlans.slice(), environment: fm.environment.slice()
+          floorPlans: fm.floorPlans.slice(), environment: fm.environment.slice(),
+          links: fm.links.map((x) => Object.assign({}, x))
         },
         transaction: Object.assign({}, tran, {
           totalPrice: num($('f-total').value), unitPrice: num($('f-unit').value),
@@ -3249,6 +3921,196 @@
     });
   }
 
+  // ---------- 详情页媒体：一套渲染 + 一个查看器（所有房源、所有区块共用） ----------
+  // 多媒体 / 户型图 / 小区环境图 / 装修页图片都走 mediaListHTML()，不要按来源或区块另写模板。
+  // 每个可预览项是一个 .media-item 按钮，data-media-src/type 供查看器收集；非 URL 的文本路径
+  // 仍渲染成外链。查看器用 document 事件委托绑定，详情页动态重绘后依然有效。
+  function isMediaUrl(s) {
+    return /^https?:\/\//i.test(s) || /^\/media\//.test(s) || /^data:/i.test(s);
+  }
+  /* 只有真正的视频文件才能交给 <video>。安居客 / 贝壳给的都是「播放页 HTML 链接」或封面图，
+   * 塞进 <video src> 只会显示一块灰色（用户反馈「感觉是张图片」），必须改成外链卡片。 */
+  function isPlayableVideo(s) {
+    const u = String(s || '').trim();
+    // media.videos 里的本地上传文件一律可播（扩展名由上传时按 mime 生成，别因缺扩展名误判）
+    return /^data:video\//i.test(u)
+      || /^\/media\//i.test(u)
+      || /^https?:\/\/\S+\.(mp4|webm|ogg|mov|m4v|m3u8)(\?|#|$)/i.test(u);
+  }
+  /* 外链视频 / VR：优先用房源 media.links（插件新采集，带封面）；历史房源没有这个字段，
+   * 就从备注里插件写下的【VR】/【视频/VR/沙盘】行解析，按 URL 去重，不用重新采集。 */
+  function mediaLinksOf(p) {
+    const out = [], seen = Object.create(null);
+    const add = (x) => {
+      const url = String((x && x.url) || '').trim();
+      if (!/^https?:\/\//i.test(url) || seen[url]) return;
+      seen[url] = 1;
+      out.push({
+        url, kind: x.kind === 'vr' ? 'vr' : 'video',
+        cover: String((x && x.cover) || ''), label: String((x && x.label) || '')
+      });
+    };
+    const m = (p && p.media) || {};
+    if (Array.isArray(m.links)) m.links.forEach(add);
+    String((p && p.notes) || '').split('\n').forEach((line) => {
+      const hit = line.match(/^【(VR|视频\/VR\/沙盘|视频)】(.+)$/);
+      if (!hit) return;
+      (hit[2].match(/https?:\/\/[^\s，,；;]+/g) || []).forEach((u) => {
+        add({ url: u, kind: /(realsee|panorama|pano_|\/vr\b|vr=)/i.test(u) ? 'vr' : 'video' });
+      });
+    });
+    return out;
+  }
+  function mediaItemHTML(item) {
+    const u = String(item && item.url != null ? item.url : '');
+    const type = (item && item.type) || 'image';
+    if (type === 'link') {
+      // 外链视频 / VR：有封面显示封面，没有封面用带图标的占位块
+      const cover = String(item.cover || '');
+      const thumb = isMediaUrl(cover)
+        ? `<img src="${esc(cover)}" alt="" referrerpolicy="no-referrer"/>`
+        : `<span class="media-ph">${item.kind === 'vr' ? '🌀' : '🎬'}</span>`;
+      const label = item.label || (item.kind === 'vr' ? '🌀 VR 看房' : '▶ 视频讲解');
+      return `<button type="button" class="media-item media-link-item" data-media-src="${esc(cover)}" data-media-type="link" data-media-link="${esc(item.linkUrl || '')}" data-media-label="${esc(label)}" data-media-kind="${esc(item.kind || 'video')}" title="${esc(label)}">`
+        + thumb + `<span class="media-play" aria-hidden="true">${item.kind === 'vr' ? '🌀' : '▶'}</span>`
+        + `<span class="media-badge">${esc(label)}</span></button>`;
+    }
+    if (!isMediaUrl(u)) {
+      return `<a class="media-link" href="${esc(u)}" target="_blank" rel="noopener">${type === 'video' ? '🎬' : '📷'} ${esc(u)}</a>`;
+    }
+    return `<button type="button" class="media-item" data-media-src="${esc(u)}" data-media-type="${type === 'video' ? 'video' : 'image'}" title="点击放大">`
+      + (type === 'video'
+        ? `<video src="${esc(u)}" preload="metadata" muted playsinline></video><span class="media-play" aria-hidden="true">▶</span>`
+        : `<img src="${esc(u)}" alt="" referrerpolicy="no-referrer"/>`)
+      + '</button>';
+  }
+  function mediaListHTML(items, title) {
+    if (!items || !items.length) return '<div class="muted">无</div>';
+    return `<div class="media-list lg" data-media-title="${esc(title || '媒体')}">`
+      + items.map(mediaItemHTML).join('') + '</div>';
+  }
+  const asImages = (arr) => (arr || []).map((u) => ({ url: u, type: 'image' }));
+
+  // 查看器：按「所在区块」收集媒体，左右循环切换图片 / 视频。
+  let mmItems = [], mmIndex = 0, mmTitle = '';
+  function mmRender() {
+    const view = $('mm-view');
+    if (!view) return;
+    const it = mmItems[mmIndex] || {};
+    if (it.type === 'link') {
+      // 视频 / VR 由原站提供（播放页不是 mp4，且多数站点拒绝被 iframe 嵌套），
+      // 查看器里展示封面 + 明确的「在原站打开」按钮，保持左右切换能力。
+      const cover = it.src ? Store.mediaLargeUrl(it.src) : '';
+      view.innerHTML = '<div class="mm-link">'
+        + (cover
+          ? `<img class="mm-link-cover" src="${esc(cover)}" alt="" referrerpolicy="no-referrer"/>`
+          : `<div class="mm-link-ph">${it.kind === 'vr' ? '🌀' : '🎬'}</div>`)
+        + '<div class="mm-link-cta">'
+        + `<div class="mm-link-label">${esc(it.label || (it.kind === 'vr' ? '🌀 VR 看房' : '▶ 视频讲解'))}</div>`
+        + '<button type="button" class="btn primary" id="mm-open-link">'
+        + (it.kind === 'vr' ? '🌀 打开 VR 看房' : '▶ 在原站播放视频') + '</button>'
+        + '<div class="muted">视频 / VR 由原站提供，点击会在新窗口打开</div>'
+        + '</div></div>';
+    } else {
+      view.innerHTML = it.type === 'video'
+        ? `<video src="${esc(it.src)}" controls autoplay playsinline></video>`
+        : (it.src ? `<img src="${esc(Store.mediaLargeUrl(it.src))}" alt="" referrerpolicy="no-referrer"/>` : '<div class="muted">无法预览</div>');
+    }
+    $('mm-title').textContent = mmTitle || '媒体预览';
+    $('mm-count').textContent = mmItems.length ? (mmIndex + 1) + ' / ' + mmItems.length : '';
+    const multi = mmItems.length > 1;
+    $('mm-prev').hidden = !multi;
+    $('mm-next').hidden = !multi;
+  }
+  function mmStep(d) {
+    if (mmItems.length < 2) return;
+    mmIndex = (mmIndex + d + mmItems.length) % mmItems.length;
+    mmRender();
+  }
+  function openMediaViewer(items, index, title) {
+    // 外链视频 / VR 可能没有封面（src 为空），仍要能在查看器里切换、打开播放页
+    mmItems = (items || []).filter((x) => x && (x.src || x.link));
+    if (!mmItems.length) return;
+    mmIndex = Math.max(0, Math.min(index, mmItems.length - 1));
+    mmTitle = title || '媒体预览';
+    const m = $('media-modal');
+    if (m) m.classList.remove('hidden');
+    mmRender();
+  }
+  function closeMediaViewer() {
+    const m = $('media-modal');
+    if (m) m.classList.add('hidden');
+    const view = $('mm-view');
+    if (view) view.innerHTML = '';   // 移除 video 节点，立即停掉播放和声音
+    mmItems = []; mmIndex = 0;
+  }
+  // 卡片左下角标签：按类型取房源媒体，复用同一个查看器
+  function openCardMedia(pid, kind) {
+    const p = (state.properties || []).find((x) => x.id === pid);
+    if (!p) return;
+    const media = p.media || {};
+    if (kind === 'images') {
+      const items = (media.images || []).filter(Boolean).map((u) => ({ src: u, type: 'image' }));
+      openMediaViewer(items, 0, p.title || (p.location || {}).community || '房源图片');
+    } else if (kind === 'floor') {
+      const items = (media.floorPlans || []).filter(Boolean).map((u) => ({ src: u, type: 'image' }));
+      openMediaViewer(items, 0, '户型图');
+    } else if (kind === 'vr') {
+      const items = mediaLinksOf(p).filter((x) => x.kind === 'vr').map((x) => ({
+        src: x.cover || '', type: 'link', link: x.url, kind: 'vr',
+        label: x.label || '🌀 VR 看房'
+      }));
+      openMediaViewer(items, 0, 'VR 看房');
+    }
+  }
+  function wireMediaViewer() {
+    const m = $('media-modal');
+    if (!m) return;
+    $('mm-x').onclick = closeMediaViewer;
+    $('mm-prev').onclick = () => mmStep(-1);
+    $('mm-next').onclick = () => mmStep(1);
+    $('mm-stage').addEventListener('click', (e) => {
+      if (e.target === $('mm-stage') || e.target === $('mm-view')) closeMediaViewer();
+    });
+    // 外链视频 / VR 的「在原站打开」按钮每次 mmRender 都会重建，用委托绑一次
+    $('mm-view').addEventListener('click', (e) => {
+      if (!e.target.closest || !e.target.closest('#mm-open-link')) return;
+      const it = mmItems[mmIndex];
+      if (it && it.link) window.open(it.link, '_blank', 'noopener');
+    });
+    m.addEventListener('click', (e) => { if (e.target === m) closeMediaViewer(); });
+    document.addEventListener('keydown', (e) => {
+      if (m.classList.contains('hidden')) return;
+      if (e.key === 'Escape') closeMediaViewer();
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); mmStep(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); mmStep(1); }
+    });
+    // 事件委托：详情页 / 装修页内容都会重绘，绑在 document 上一次即可
+    document.addEventListener('click', (e) => {
+      // 卡片左下角「图片 / 户型 / VR」标签
+      const tab = e.target.closest && e.target.closest('.cm-tab');
+      if (tab) {
+        e.preventDefault(); e.stopPropagation();
+        openCardMedia(tab.getAttribute('data-cpid'), tab.getAttribute('data-cmedia'));
+        return;
+      }
+      const item = e.target.closest && e.target.closest('.media-item');
+      if (!item) return;
+      const list = item.closest('.media-list[data-media-title]');
+      if (!list) return;
+      e.preventDefault();
+      const nodes = Array.prototype.slice.call(list.querySelectorAll('.media-item'));
+      const items = nodes.map((n) => ({
+        src: n.getAttribute('data-media-src') || '',
+        type: n.getAttribute('data-media-type') || 'image',
+        link: n.getAttribute('data-media-link') || '',
+        label: n.getAttribute('data-media-label') || '',
+        kind: n.getAttribute('data-media-kind') || ''
+      }));
+      openMediaViewer(items, nodes.indexOf(item), list.getAttribute('data-media-title'));
+    });
+  }
+
   // ---------- 详情：基本信息 / 装修信息 两个页签的内容渲染 ----------
 
   // 基本信息页：原「交易信息」卡片已合并进「购房信息」，这里只保留基础信息 + 配套设施 + 位置/多媒体/户型图/环境
@@ -3256,32 +4118,38 @@
     const loc = p.location || {}, attr = p.attributes || {}, media = p.media || {}, fac = p.facilities || {};
     const kv = (k, v) => `<div class="kv"><span class="k">${esc(k)}</span><span>${v == null || v === '' ? '—' : esc(v)}</span></div>`;
     const facYes = (k, label) => `<div class="kv"><span class="k">${label}</span><span class="${fac[k] ? 'yes' : 'no'}">${fac[k] ? '✓ 有' : '— 无'}</span></div>`;
-    const isUrl = (s) => /^https?:\/\//i.test(s) || /^\/media\//.test(s) || /^data:/i.test(s);
-    const mediaListHtml = (arr) => {
-      if (!arr || !arr.length) return '<div class="muted">无</div>';
-      let h = '<div class="media-list lg">';
-      arr.forEach((u) => { h += isUrl(u) ? `<img src="${esc(u)}" alt=""/>` : `<a href="${esc(u)}" target="_blank">📷 ${esc(u)}</a>`; });
-      return h + '</div>';
-    };
-    const imgs = media.images || [], vids = media.videos || [];
-    let mediaHtml = '<div class="muted">无</div>';
-    if (imgs.length || vids.length) {
-      mediaHtml = '<div class="media-list lg">';
-      imgs.forEach((u) => { mediaHtml += isUrl(u) ? `<img src="${esc(u)}" alt=""/>` : `<a href="${esc(u)}" target="_blank">📷 ${esc(u)}</a>`; });
-      vids.forEach((u) => { mediaHtml += isUrl(u) ? `<video src="${esc(u)}" controls style="max-width:100%"></video>` : `<a href="${esc(u)}" target="_blank">🎬 ${esc(u)}</a>`; });
-      mediaHtml += '</div>';
-    }
-    const floorHtml = mediaListHtml(media.floorPlans);
-    const envHtml = mediaListHtml(media.environment);
+    // 三个区块共用同一套渲染；点开后按区块左右切换（图片 / 视频 / 外链视频 VR 混排也可切）
+    const linkItems = mediaLinksOf(p).map((x) => ({
+      url: x.cover, cover: x.cover, type: 'link', linkUrl: x.url, kind: x.kind,
+      label: x.label || (x.kind === 'vr' ? '🌀 VR 看房' : '▶ 视频讲解')
+    }));
+    const linkUrls = Object.create(null);
+    linkItems.forEach((x) => { linkUrls[x.linkUrl] = 1; });
+    const isImageUrl = (u) => /\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(String(u == null ? '' : u).trim());
+    const videoItems = (media.videos || [])
+      .filter((u) => !linkUrls[String(u == null ? '' : u).trim()])
+      .map((u) => isPlayableVideo(u)
+        ? { url: u, type: 'video' }
+        // 视频封面图本来就是静态图片，按图片显示，别再套 <video> 变成「点了没反应」
+        : (isImageUrl(u) ? { url: u, type: 'image' }
+          : { url: '', type: 'link', linkUrl: u, kind: 'video', label: '▶ 打开视频播放页' }));
+    const mediaItems = asImages(media.images).concat(videoItems, linkItems);
+    const mediaHtml = mediaListHTML(mediaItems, '多媒体');
+    const floorHtml = mediaListHTML(asImages(media.floorPlans), '户型图');
+    const envHtml = mediaListHTML(asImages(media.environment), '小区环境图');
     const renovatedText = atOf(p).renovated === true ? '是' : (atOf(p).renovated === false ? '否' : '');
+    // 备注：所有房源用同一个 kv 结构，长文本由 wireNoteFold() 统一折叠（不看数据来源）。
+    // 这样导入房源带大量补充说明时，详情页仍是同一套布局，不会把左右两列撑变形。
+    const noteText = String(p.notes == null ? '' : p.notes);
+    const notesHtml = `<div class="kv kv-notes"><span class="k">备注</span><span class="note-wrap"><span class="note-body">${noteText ? esc(noteText) : '—'}</span><button type="button" class="btn sm note-fold hidden">展开查看</button></span></div>`;
     return `<div class="detail-grid">
         <div>
           ${purchaseBox}
           <div class="detail-box" style="margin-bottom:16px">
             <h3 style="margin-top:0">基础信息</h3>
-            ${kv('城市/区域', [loc.city, loc.district].filter(Boolean).join(' / '))}
+            ${kv('省 / 市 / 区县', [loc.province, loc.city, loc.district].filter(Boolean).join(' / '))}
             ${kv('小区', loc.community)}
-            <div class="kv"><span class="k">地址</span><span class="kv-addr">${loc.address ? esc(loc.address) : '—'}<button class="btn sm" id="d-surround" type="button">📍 查看周边配套</button></span></div>
+            <div class="kv"><span class="k">地址</span><span class="kv-addr">${loc.address ? esc(loc.address) : '—'}<button class="btn sm" id="d-surround" data-surround type="button">📍 查看周边配套</button></span></div>
             ${kv('户型', attr.layout)}
             ${kv('面积', attr.area != null ? attr.area + ' ㎡' : '')}
             ${kv('朝向', attr.orientation)}
@@ -3304,13 +4172,16 @@
             ${facYes('water','水')}${facYes('electricity','电')}${facYes('gas','燃气')}
             ${kv('学区/对口学校', fac.schoolInfo)}
             ${kv('配套备注', fac.notes)}
-            ${kv('备注', p.notes)}
+            ${notesHtml}
           </div>
         </div>
         <div>
           <div class="detail-box" style="margin-bottom:16px">
-            <h3 style="margin-top:0">位置</h3>
-            ${p.geo && p.geo.lng ? kv('坐标', p.geo.lng.toFixed(5) + ', ' + p.geo.lat.toFixed(5) + '（' + esc(p.geo.source || '') + '）') : '<div class="muted">未定位</div>'}
+            <div class="detail-box-head">
+              <h3>位置</h3>
+              <button class="btn sm" data-surround type="button">📍 查看周边配套</button>
+            </div>
+            ${p.geo && p.geo.lng && p.geo.lat ? kv('坐标', fmtCoord(p.geo.lng) + ', ' + fmtCoord(p.geo.lat) + '（' + esc(p.geo.source || '') + '）') : '<div class="muted">未定位</div>'}
             <div id="detail-map" class="amap-mini" style="height:260px;margin-top:10px"></div>
           </div>
           <div class="detail-box" style="margin-bottom:16px">
@@ -3418,19 +4289,140 @@
     });
   }
 
+  // ---------- 详情右列媒体高度上限（动态按左列算，不写死像素） ----------
+  // 需求：多媒体 / 户型图 / 小区环境图仍随图片自适应，但整个右列不能拖到左列最后一张卡片以下。
+  // 只有「右列自然高度 > 左列内容高度」时才加限制；按各区块自然高度分配剩余空间
+  // （water-filling：图片少的区块不占多余空间，剩下的都给图片多的区块），超出部分在区块内滚动。
+  // 依赖 CSS `.detail-grid { align-items:start }`：否则右列盒子被 grid 拉伸，量不到真实内容高度。
+  function capDetailMediaHeight(container) {
+    if (!container) return () => {};
+    function apply() {
+      // 每次都重新查 DOM：详情页可能被局部重绘（页签 / 跟进 / 查看器），
+      // 缓存旧节点会拿到全 0 的 rect，导致「清空限制后提前 return」而右列失去上限。
+      const grid = container.querySelector('.detail-grid');
+      if (!grid || grid.children.length < 2) return;
+      const left = grid.children[0], right = grid.children[1];
+      const lists = Array.from(right.querySelectorAll('.media-list.lg'));
+      const leftBoxes = Array.from(left.querySelectorAll(':scope > .detail-box'));
+      if (!lists.length || !leftBoxes.length) return;
+      // 先还原自然高度，保证重复执行幂等（备注展开、改窗口、地图渲染后重算不累积误差）
+      lists.forEach((l) => { l.style.maxHeight = ''; l.style.overflowY = ''; l.classList.remove('capped'); });
+      right.style.maxHeight = ''; right.style.overflowY = '';
+      right.classList.remove('hvt-capped-col');
+
+      const top = grid.getBoundingClientRect().top;
+      const leftBottom = leftBoxes[leftBoxes.length - 1].getBoundingClientRect().bottom;
+      const cap = leftBottom - top;                       // 左列内容高度（到最后一张卡片底部）
+      if (!(cap > 0)) return;
+      const offset = Math.max(0, right.getBoundingClientRect().top - top);
+      const naturals = lists.map((l) => l.scrollHeight);
+      const totalNatural = naturals.reduce((a, b) => a + b, 0);
+      const fixed = Math.max(0, right.scrollHeight - totalNatural); // 位置卡片 + 各标题 / 内边距 / 间距
+      const budget = cap - offset - fixed - 4;           // 预留取整误差，保证不越过左列底部
+      if (totalNatural <= budget) return;               // 放得下 → 完全自适应，不加任何限制
+
+      const MIN = 128;                                  // 至少露一行缩略图
+      const caps = new Array(lists.length).fill(0);
+      let remaining = Math.max(0, budget);
+      let active = naturals.map((h, i) => (h > 0 ? i : -1)).filter((i) => i >= 0);
+      while (active.length) {
+        const share = remaining / active.length;
+        const done = active.filter((i) => naturals[i] <= share + 1);
+        if (!done.length) { active.forEach((i) => { caps[i] = Math.floor(share); }); break; }
+        done.forEach((i) => { caps[i] = naturals[i]; remaining -= naturals[i]; });
+        active = active.filter((i) => done.indexOf(i) < 0);
+      }
+      const heights = caps.map((v, i) => naturals[i] > 0
+        ? Math.min(naturals[i], Math.max(v, Math.min(MIN, naturals[i]))) : 0);
+      // 取整误差可能让各区块上限之和比预算多 1px，先把最大的区块压回去，
+      // 否则会误触发「整列滚动」兜底（位置卡片会跟着滚走，体验比分块内滚差）。
+      const limit = Math.floor(budget);
+      let sumHeights = heights.reduce((a, b) => a + b, 0);
+      if (sumHeights > limit) {
+        let big = 0;
+        for (let i = 1; i < heights.length; i++) if (heights[i] > heights[big]) big = i;
+        heights[big] = Math.max(0, heights[big] - (sumHeights - limit));
+        sumHeights = heights.reduce((a, b) => a + b, 0);
+      }
+      // 左列太短、连每个区块一行都放不下：改由右列整列滚动兜底，绝不超过左列底部
+      if (sumHeights > limit) {
+        right.style.maxHeight = Math.max(0, cap - offset) + 'px';
+        right.classList.add('hvt-capped-col');
+        return;
+      }
+      lists.forEach((l, i) => {
+        if (naturals[i] <= 0 || heights[i] >= naturals[i] - 1) return; // 放得下的区块保持自适应
+        l.style.maxHeight = Math.round(heights[i]) + 'px';
+        l.classList.add('capped');
+      });
+      // 校正浏览器取整误差：只比「右列高度 - 左列高度」。
+      // 坑：不能用 right.bottom - leftBottom —— 压缩右列会让浏览器调整滚动位置（scroll anchoring），
+      // 开头缓存的 leftBottom 与后续 right.bottom 不在同一坐标系，会凭空多出几百像素触发误兜底。
+      let over = Math.round(right.getBoundingClientRect().height - cap);
+      if (over > 0) {
+        const bySize = lists.map((l, i) => i).filter((i) => lists[i].classList.contains('capped'))
+          .sort((a, b) => naturals[b] - naturals[a]);
+        for (const i of bySize) {
+          const cur = parseFloat(lists[i].style.maxHeight) || 0;
+          lists[i].style.maxHeight = Math.round(Math.max(MIN, cur - over)) + 'px';
+          over = Math.round(right.getBoundingClientRect().height - cap);
+          if (over <= 0) break;
+        }
+      }
+      if (over > 0) {
+        lists.forEach((l) => { l.style.maxHeight = ''; l.style.overflowY = ''; l.classList.remove('capped'); });
+        right.style.maxHeight = Math.max(0, cap - offset) + 'px';
+        right.classList.add('hvt-capped-col');
+      }
+    }
+    container.__hvtMediaCap = apply;
+    return apply;
+  }
+  // 供窗口 resize / 侧边栏收起时复用；#detail-content 元素本身不会被重绘替换，闭包一直有效
+  function recalcDetailMediaCap() {
+    const dc = document.getElementById('detail-content');
+    if (dc && typeof dc.__hvtMediaCap === 'function') dc.__hvtMediaCap();
+  }
+
+  // 备注折叠：所有房源统一规则（超过约 6 行才折叠，短备注连按钮都不出现）。
+  // 只按内容高度判断，绝不按来源平台/导入方式分流，详情页始终只有一套布局。
+  function wireNoteFold(container, onChange) {
+    container.querySelectorAll('.kv-notes').forEach((row) => {
+      const body = row.querySelector('.note-body');
+      const btn = row.querySelector('.note-fold');
+      if (!body || !btn) return;
+      body.classList.add('folded');
+      if (body.scrollHeight <= body.clientHeight + 2) { body.classList.remove('folded'); return; }
+      btn.classList.remove('hidden');
+      btn.onclick = () => {
+        const folded = body.classList.toggle('folded');
+        btn.textContent = folded ? '展开查看' : '收起';
+        // 备注展开 / 收起会改变左列高度，右列上限要跟着重算
+        if (typeof onChange === 'function') requestAnimationFrame(onChange);
+      };
+    });
+  }
+
   // 根据顶部页签把 #detail-content 渲染为基本信息或装修信息
   function paintDetailContent(c, p, purchaseBox) {
     const container = document.getElementById('detail-content');
     if (!container) return;
     if (state.detailTab === 'renovation' && isPurchased(p)) {
       container.innerHTML = detailRenovationHTML(p);
+      container.__hvtMediaCap = null; // 装修页不在两栏 grid 内，清掉上一次的重算闭包
       wireDetailRenovation(c, p);
     } else {
       container.innerHTML = detailBasicHTML(p, purchaseBox);
+      const recalcMedia = capDetailMediaHeight(container);
+      wireNoteFold(container, recalcMedia);
       const mapEl = container.querySelector('#detail-map');
       if (mapEl) HVMap.renderSingle(mapEl, p.geo && p.geo.lng, p.geo && p.geo.lat);
-      const surBtn = container.querySelector('#d-surround');
-      if (surBtn) surBtn.onclick = () => openSurroundModal(p);
+      // 地址行与位置卡片标题行各有一个按钮，统一走 data-surround 绑定
+      container.querySelectorAll('[data-surround]').forEach((btn) => {
+        btn.onclick = () => openSurroundModal(p);
+      });
+      recalcMedia();
+      requestAnimationFrame(recalcMedia); // 字体 / 地图渲染稳定后再校准一次
     }
   }
 
@@ -3442,27 +4434,10 @@
     const todayStr = new Date().toISOString().slice(0, 10);
     let p;
     try { p = await Store.get(id); } catch (e) { c.innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>'; return; }
-    const loc = p.location || {}, attr = p.attributes || {}, media = p.media || {}, tran = p.transaction || {}, fac = p.facilities || {};
+    // 媒体区块由 detailBasicHTML() 内的 mediaListHTML() 统一渲染（第 18 轮重构后这里不再重复一套模板）
+    const loc = p.location || {}, attr = p.attributes || {}, tran = p.transaction || {}, fac = p.facilities || {};
     const kv = (k, v) => `<div class="kv"><span class="k">${esc(k)}</span><span>${v == null || v === '' ? '—' : esc(v)}</span></div>`;
     const facYes = (k, label) => `<div class="kv"><span class="k">${label}</span><span class="${fac[k] ? 'yes' : 'no'}">${fac[k] ? '✓ 有' : '— 无'}</span></div>`;
-    const isUrl = (s) => /^https?:\/\//i.test(s) || /^\/media\//.test(s) || /^data:/i.test(s);
-    const imgListHtml = (arr) => {
-      if (!arr || !arr.length) return '<div class="muted">无</div>';
-      let h = '<div class="media-list lg">';
-      arr.forEach((u) => { h += isUrl(u) ? `<img src="${esc(u)}" alt=""/>` : `<a href="${esc(u)}" target="_blank">📷 ${esc(u)}</a>`; });
-      return h + '</div>';
-    };
-
-    let mediaHtml = '<div class="muted">无</div>';
-    const imgs = media.images || [], vids = media.videos || [];
-    if (imgs.length || vids.length) {
-      mediaHtml = '<div class="media-list lg">';
-      imgs.forEach((u) => { mediaHtml += isUrl(u) ? `<img src="${esc(u)}" alt=""/>` : `<a href="${esc(u)}" target="_blank">📷 ${esc(u)}</a>`; });
-      vids.forEach((u) => { mediaHtml += isUrl(u) ? `<video src="${esc(u)}" controls style="max-width:100%"></video>` : `<a href="${esc(u)}" target="_blank">🎬 ${esc(u)}</a>`; });
-      mediaHtml += '</div>';
-    }
-    const floorHtml = imgListHtml(media.floorPlans);
-    const envHtml = imgListHtml(media.environment);
 
     const bought = isPurchased(p);
     const stText = bought ? '已购' : (tran.status || '在售');
@@ -3669,8 +4644,8 @@
     if (btn) { btn.disabled = true; btn.textContent = '定位中…'; }
     try {
       try { await Geo.ensureAmap(); } catch (e) { /* SDK 未就绪时由 geocode 自行回退 */ }
-      const g = await Geo.geocode(q, '成都');
-      openSurroundModal(null, { name: q, center: { lng: g.lng, lat: g.lat }, city: '成都' });
+      const g = await Geo.geocode(q, '全国');
+      openSurroundModal(null, { name: q, center: { lng: g.lng, lat: g.lat }, city: '' });
     } catch (e) {
       toast('地址定位失败：' + e.message);
     } finally {
@@ -3686,7 +4661,7 @@
     if (!modal) return;
     const loc = (p && p.location) || {};
     const name = ov.name || (p && p.title) || loc.community || '该房源';
-    const city = ov.city || loc.city || '成都';
+    const city = ov.city || loc.city || '';
     $('sr-title').textContent = '📍 ' + name + ' · 周边配套';
     const listEl = $('surround-list');
     const mapEl = $('surround-map');
@@ -3778,7 +4753,7 @@
           const timer = setTimeout(finish, 8000);   // 兜底：回调不触发也不至于一直卡在「加载中」
           AMap.plugin('AMap.PlaceSearch', () => {
             try {
-              const ps = new AMap.PlaceSearch({ pageSize: 25, pageIndex: 1, city: city });
+              const ps = new AMap.PlaceSearch({ pageSize: 25, pageIndex: 1, city: city || '全国' });
               ps.searchNearBy(cat.kw, [center.lng, center.lat], radius(), (status, result) => {
                 clearTimeout(timer);
                 if (status === 'complete' && result && result.poiList && result.poiList.pois) {
@@ -3906,20 +4881,144 @@
     const m = tag.match(/^(\d{4})(\d{2})(\d{2})/);
     return { tag: tag, date: m ? (m[1] + '-' + m[2] + '-' + m[3]) : '—' };
   }
+
+  // 语义化版本比较：vX.Y.Z → 数组逐位比；返回 1=a新 / -1=b新 / 0=相同；无法解析按字符串比。
+  function cmpVersion(a, b) {
+    const pa = String(a || '').replace(/^v/i, '').split('.').map(Number);
+    const pb = String(b || '').replace(/^v/i, '').split('.').map(Number);
+    if (pa.some(isNaN) || pb.some(isNaN) || pa.length !== 3 || pb.length !== 3) {
+      return String(a) === String(b) ? 0 : (String(a) > String(b) ? 1 : -1);
+    }
+    for (let i = 0; i < 3; i++) {
+      if (pa[i] > pb[i]) return 1;
+      if (pa[i] < pb[i]) return -1;
+    }
+    return 0;
+  }
+  // 检查更新：读公开 version.json，只做提示 + 生成升级命令，服务器文件一个都不碰。
+  async function checkForUpdate(curTag, box) {
+    if (!box) return;
+    const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
+    box.hidden = false;
+    box.className = 'pv-update';
+    if (!url) {
+      box.innerHTML = '<span class="pv-up-muted">未配置更新地址：请在部署目录的 config.js 里填 UPDATE_URL（Gitee/GitHub 上 version.json 的 raw 地址）。</span>';
+      return;
+    }
+    box.innerHTML = '<span class="pv-up-muted">正在检查…</span>';
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const info = await r.json();
+      const latest = String(info.version || '').trim();
+      if (!latest) throw new Error('版本文件缺少 version 字段');
+      const cmp = cmpVersion(latest, curTag);
+      if (cmp <= 0) {
+        box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curTag) + '）</span>';
+        return;
+      }
+      // 升级命令：停服务 → 备份数据 → 下载新包 → 覆盖 → 重启。目录/包名来自 version.json，可为空提示手填。
+      const pkg = String(info.package || 'house-view-tracker-linux-x64_' + latest.replace(/^v/i, '') + '.tar.gz');
+      const dl = String(info.downloadUrl || '');
+      const dir = String(info.installDir || '/data/house-view-tracker');
+      const lines = [
+        'sudo systemctl stop house-view-tracker',
+        'cd ' + dir.replace(/\/+$/, ''),
+        'cp -r data ../house-view-tracker-data-backup-$(date +%Y%m%d)',
+        dl ? ('curl -fL -o /tmp/' + pkg + ' "' + dl + '"') : ('# 请先把升级包 ' + pkg + ' 上传到服务器 /tmp/'),
+        'tar -xzf /tmp/' + pkg + ' --strip-components=1',
+        'sudo systemctl restart house-view-tracker'
+      ];
+      const cmd = lines.join('\n');
+      const notes = String(info.notes || '').trim();
+      const date = String(info.date || '').trim();
+      box.innerHTML =
+        '<div class="pv-up-card">' +
+          '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
+          (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
+          '<div class="pv-up-tip">网页不会改动服务器文件。复制下面的命令，贴到服务器执行即可升级（会先备份数据）：</div>' +
+          '<pre class="pv-up-cmd" id="pv-up-cmd">' + esc(cmd) + '</pre>' +
+          '<button type="button" class="btn primary" id="pv-up-copy">复制升级命令</button>' +
+        '</div>';
+      const cp = $('pv-up-copy');
+      if (cp) cp.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(cmd);
+          cp.textContent = '✓ 已复制';
+          setTimeout(() => { if (cp.isConnected) cp.textContent = '复制升级命令'; }, 1800);
+        } catch (e) {
+          // file:// 或 clipboard 不可用时退回选中文本
+          const pre = $('pv-up-cmd');
+          if (pre) { const rg = document.createRange(); rg.selectNodeContents(pre); const se = window.getSelection(); se.removeAllRanges(); se.addRange(rg); }
+          cp.textContent = '请手动复制上面选中的命令';
+        }
+      };
+    } catch (e) {
+      box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(e.message || e) + '。请检查 UPDATE_URL 是否正确、文件是否公开可访问。</span>';
+    }
+  }
+  // ---------- 设置页改为弹窗显示（点击「设置」菜单直接弹窗，而非整页切换） ----------
+  function openSettingsModal(group) {
+    if (group) settingsCurrentGroup = group;
+    let overlay = $('settings-modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'settings-modal-overlay';
+      overlay.id = 'settings-modal-overlay';
+      overlay.setAttribute('role', 'presentation');
+      overlay.innerHTML =
+        '<div class="settings-modal" role="dialog" aria-modal="true" aria-label="设置">' +
+          '<button type="button" class="settings-modal-close" id="settings-modal-close" aria-label="关闭">×</button>' +
+          '<div class="settings-modal-body profile-view" id="settings-modal-body"></div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeSettingsModal(); });
+      const cb = overlay.querySelector('#settings-modal-close');
+      if (cb) cb.onclick = closeSettingsModal;
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && overlay.classList.contains('open')) closeSettingsModal();
+      });
+    }
+    const body = overlay.querySelector('#settings-modal-body');
+    body.innerHTML = '';
+    renderProfile(body);
+    overlay.classList.add('open');
+    document.body.classList.add('modal-open');
+  }
+  function closeSettingsModal() {
+    const overlay = $('settings-modal-overlay');
+    if (overlay) overlay.classList.remove('open');
+    document.body.classList.remove('modal-open');
+  }
+
   function renderProfile(c) {
     const u = state.user || {};
     const dm = u.demand || {};
     const bv = buildInfo();
     c.innerHTML =
       crumb(['看房记录', '设置']) +
-      // 保存按钮提到页级标题栏：它同时保存个人信息 + 购房需求 + 最晚提醒，不属于某一张卡片
-      '<div class="section-head profile-head"><h2>设置</h2><span class="h-sub">个人信息 · 购房需求 · 最晚提醒</span>' +
-        '<span class="spacer"></span><span id="pf-msg" class="msg"></span>' +
-        '<button class="btn primary" id="pf-save">保存</button></div>' +
-      '<div class="profile-grid">' +
-        // 左栏：个人信息 + 顶部栏配色 + 购房最晚提醒
-        '<div class="profile-col col-a">' +
-          '<div class="profile-card">' +
+      // 布局：左侧分类导航 + 右侧内容卡片。只切换显示，不改字段 / 文案 / 保存行为。
+      '<div class="settings-layout" id="settings-layout">' +
+        '<aside class="settings-sidebar">' +
+          '<div class="settings-side-head"><h2>设置</h2>' +
+            '<button type="button" class="settings-fold" id="settings-fold" title="收起 / 展开分类">‹</button></div>' +
+          '<nav class="settings-nav">' +
+            SETTINGS_GROUPS.map((g) =>
+              '<button type="button" class="settings-nav-item' + (g.id === SETTINGS_DEFAULT_GROUP ? ' active' : '') +
+              '" data-group="' + g.id + '"><span class="sn-ico">' + g.icon + '</span>' +
+              '<span class="sn-name">' + g.name + '</span><span class="sn-arrow">›</span></button>'
+            ).join('') +
+          '</nav>' +
+        '</aside>' +
+        '<div class="settings-main">' +
+          '<div class="settings-main-head">' +
+            '<h3 id="settings-group-title">个人信息</h3>' +
+            '<span class="spacer"></span><span id="pf-msg" class="msg"></span>' +
+            '<button class="btn primary" id="pf-save">保存</button>' +
+          '</div>' +
+          '<div class="settings-panels">' +
+            '<section class="settings-panel" data-panel="personal">' +
+              '<div class="profile-card">' +
             '<h4 class="pc-title">👤 个人信息</h4>' +
             '<div class="profile-avatar">' +
               '<span class="hv-avatar lg" id="pf-avatar"></span>' +
@@ -3934,13 +5033,17 @@
               '<div class="field"><label>邮箱（不可修改）</label><input value="' + esc(u.email || '') + '" disabled /></div>' +
             '</div>' +
           '</div>' +
+            '</section>' +
+            '<section class="settings-panel" data-panel="appearance" hidden>' +
           '<div class="profile-card">' +
             '<h4 class="pc-title">🎨 主题</h4>' +
             '<div class="theme-swatches">' +
               HEADER_THEMES.map((t) => '<button class="theme-swatch ' + t.id + (state.headerTheme === t.id ? ' active' : '') + '" data-theme="' + t.id + '" title="' + t.name + '"><span class="sw"></span><span class="nm">' + t.name + '</span></button>').join('') +
             '</div>' +
           '</div>' +
-          // 最晚提醒移到左栏：左栏三张卡片与右栏「购房需求」一张卡片底边对齐
+            '</section>' +
+            '<section class="settings-panel" data-panel="demand" hidden>' +
+          // 购房需求分组：最晚提醒 + 意向需求
           '<div class="profile-card">' +
             '<h4 class="pc-title">⏰ 购房最晚提醒时间</h4>' +
             '<div class="deadline-row">' +
@@ -3950,9 +5053,7 @@
             '</div>' +
             '<p class="muted" style="font-size:12px;margin:8px 0 0">开启并保存后，顶部栏中间会常驻显示剩余天数提醒。</p>' +
           '</div>' +
-        '</div>' +
-        // 右栏（宽）：购房需求，撑满左栏三张卡片的总高度
-        '<div class="profile-col col-b">' +
+        // 购房需求卡片继续留在 demand 分组里
           '<div class="profile-card">' +
             '<h4 class="pc-title">🎯 购房需求</h4>' +
             '<p class="muted" style="font-size:12px;margin:0 0 12px">记录你的意向要求；保存后到「房源列表」点「🎯 需求匹配」，会自动给已录入房源打分并筛出匹配度最高的（≥40 分）。也可在列表页点「🎯 需求匹配」直接弹窗填写。</p>' +
@@ -3967,11 +5068,11 @@
                   '<label><input type="checkbox" id="d-school" ' + (dm.needSchool ? 'checked' : '') + '/> 有学区</label>' +
                 '</div>' +
               '</div>' +
-              '<div class="field full"><label>补充说明</label><textarea id="d-notes" style="min-height:56px">' + esc(dm.notes || '') + '</textarea></div>' +
+              '<div class="field full"><label>补充说明</label><textarea id="d-notes">' + esc(dm.notes || '') + '</textarea></div>' +
             '</div>' +
           '</div>' +
-        '</div>' +
-      '</div>' +
+            '</section>' +
+            '<section class="settings-panel" data-panel="map" hidden>' +
       // 高德 Key：每用户自配。已保存的 Key / 密钥一律不回显（password 且 value 为空），
       // 留空表示不修改；Web 服务 Key 服务端专用，不下发前端。
       // 地图功能默认关闭：必须点「启用地图功能」后才加载高德脚本 / 显示地图分布菜单。
@@ -4000,6 +5101,51 @@
           (u.amapJsKey ? '<button type="button" class="btn" id="amap-clear">清除已保存的 Key</button>' : '') +
         '</div>' +
       '</div>' +
+            '</section>' +
+            '<section class="settings-panel" data-panel="ai" hidden>' +
+      // 多模型清单：预设只露 Key 输入框，地址 / 模型名在「高级」里可改；密钥只存服务端。
+      '<div class="profile-card ai-mm-card">' +
+        '<h4 class="pc-title">🤖 AI 模型配置</h4>' +
+        '<p class="muted" style="font-size:12px;margin:0 0 10px">不开启就走本机网关自动选模型；开启后，聊天、房源截图识别、户型图识别都走「当前使用」的那一个模型。每个服务商共用一个接口地址和 API Key，下面可以挂多个模型并标注类型；类型只是标注，不影响调用。密钥只存服务端，不会回显。</p>' +
+        '<div class="ai-mm-top">' +
+          '<div class="ai-mm-top-txt"><b>启用 AI 直连</b><span class="muted" id="ai-mm-state"></span></div>' +
+          '<label class="ai-mm-switch"><input type="checkbox" id="ai-mm-enabled" ' + (u.aiDirectEnabled ? 'checked' : '') + '/><span></span></label>' +
+        '</div>' +
+        '<div class="ai-mm-current" id="ai-mm-current"></div>' +
+        '<div class="ai-mm-list" id="ai-mm-list"></div>' +
+        '<div class="aip-editor aip-ve" id="aip-vendor-editor" hidden>' +
+          '<div class="aip-editor-box aip-ve-box" role="dialog" aria-label="编辑服务商">' +
+            '<h4 class="aip-editor-title">编辑服务商：<span id="aip-ve-title">—</span></h4>' +
+            '<div class="aip-ve-grid">' +
+              '<label>服务商名称<input id="aip-ve-name" class="tb-in" placeholder="显示名称"/></label>' +
+              '<label>接口地址<input id="aip-ve-base" class="tb-in" placeholder="https://.../v1"/></label>' +
+              '<label>API Key<input id="aip-ve-key" class="tb-in" type="password" ' +
+                'data-secret-input="1" data-ai-key="1" readonly autocomplete="new-password" spellcheck="false" ' +
+                'placeholder="粘贴 API Key"/></label>' +
+              '<span class="aip-ve-key-act">' +
+                '<button type="button" class="btn" data-secret-toggle="aip-ve-key">显示</button>' +
+                '<button type="button" class="btn" data-act="clear-key">清除</button>' +
+              '</span>' +
+            '</div>' +
+            '<div class="aip-ve-models">' +
+              '<div class="aip-ve-models-head"><span>模型清单 · 名称和类型直接改，改完点「保存」</span>' +
+                '<button type="button" class="btn" data-act="addmodel">＋ 添加模型</button></div>' +
+              '<div id="aip-ve-models"></div>' +
+            '</div>' +
+            '<div class="aip-edit-actions">' +
+              '<button type="button" class="btn primary" data-act="save-vendor">保存</button>' +
+              '<button type="button" class="btn" data-act="cancel-vendor">取消</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="ai-mm-actions">' +
+          '<button type="button" class="btn primary" id="ai-mm-save-all">保存全部</button>' +
+          '<button type="button" class="btn" id="ai-mm-add">＋ 自定义服务商</button>' +
+          '<span class="muted" style="font-size:12px">下面只列厂商。点厂商名称或「编辑」可以查看和修改它的接口地址、API Key 和模型清单；密钥只存服务端，不会回显。</span>' +
+        '</div>' +
+      '</div>' +
+            '</section>' +
+            '<section class="settings-panel" data-panel="security" hidden>' +
       // 长时间未操作自动退出：设置只存当前浏览器，不参与页级「保存」按钮（不属于用户资料）
       '<div class="profile-card idle-card">' +
         '<h4 class="pc-title">⏰ 自动退出</h4>' +
@@ -4027,12 +5173,500 @@
           '<button type="button" class="btn primary" id="pwd-change">修改密码</button>' +
         '</div>' +
       '</div>' +
-      // 版本信息：全宽独立行，不参与左右两列的高度对齐
+            '</section>' +
+            '<section class="settings-panel" data-panel="about" hidden>' +
+      // 版本信息：独立分组，不参与其它分组的排布
       '<div class="profile-version">' +
         '<span class="pv-mark">🏠</span>' +
         '<div class="pv-main"><b>看房记录与对比</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
-        '<div class="pv-meta"><span>版本 <b>v' + esc(bv.tag) + '</b></span><span>构建于 ' + esc(bv.date) + '</span></div>' +
+        '<div class="pv-meta"><span>版本 <b>' + esc(bv.tag) + '</b></span><span>构建于 ' + esc(bv.date) + '</span>' +
+          '<button type="button" class="btn pv-up-btn" id="pv-check-update" title="检查是否有新版本">检查更新</button></div>' +
+        '<div class="pv-update" id="pv-update" hidden></div>' +
+      '</div>' +
+            '</section>' +
+            // 运行监控：只读面板，内容由 js/monitor.js 异步填充（首次切到该组才加载数据）
+            '<section class="settings-panel" data-panel="monitor" hidden>' +
+              '<div id="hvt-monitor-root"></div>' +
+            '</section>' +
+          '</div>' +
+        '</div>' +
       '</div>';
+
+    // ---------- 设置页：左侧分组导航（只切换显示，字段与保存行为不变） ----------
+    const settingsLayout = $('settings-layout');
+    const settingsMain = settingsLayout.querySelector('.settings-main');
+    const settingsPanels = Array.from(c.querySelectorAll('.settings-panel'));
+    const settingsNavItems = Array.from(c.querySelectorAll('.settings-nav-item'));
+    const showSettingsGroup = (gid) => {
+      const g = SETTINGS_GROUPS.find((x) => x.id === gid) || SETTINGS_GROUPS[0];
+      settingsCurrentGroup = g.id;
+      settingsPanels.forEach((p) => { p.hidden = p.dataset.panel !== g.id; });
+      settingsNavItems.forEach((b) => b.classList.toggle('active', b.dataset.group === g.id));
+      // 运行监控与 AI 功能一样需要整行宽度（表格列多，不能被 720px 窄栏挤扁）
+      if (settingsMain) settingsMain.classList.toggle('narrow', g.id !== 'ai' && g.id !== 'monitor');
+      const t = $('settings-group-title'); if (t) t.textContent = g.name;
+      const m = $('pf-msg'); if (m) m.textContent = '';
+      // 只读面板：每次切到该组都重新挂载（设置弹窗重绘后 DOM 是新的），筛选状态留在模块内部
+      if (g.id === 'monitor' && window.HvtMonitor) {
+        window.HvtMonitor.mount($('hvt-monitor-root'));
+      }
+    };
+    settingsNavItems.forEach((b) => b.onclick = () => showSettingsGroup(b.dataset.group));
+    showSettingsGroup(settingsCurrentGroup);
+    const settingsFold = $('settings-fold');
+    if (settingsFold) settingsFold.onclick = () => {
+      const collapsed = settingsLayout.classList.toggle('collapsed');
+      settingsFold.textContent = collapsed ? '›' : '‹';
+    };
+
+    // ---------- 多模型清单（唯一数据源：u.aiProviders 脱敏视图 + 预设常量） ----------
+    // v10：主列表**只列厂商**；点厂商名称或「编辑」→ 弹窗里查看/编辑该厂商的接口地址、API Key、模型清单。
+    //      弹窗里的改动先落在草稿 aiDrafts，点「保存」才提交；提交结构与后端完全一致（零后端改动）。
+    const ACTIVE_SEP = '::';
+    const savedProviders = () => (Array.isArray(u.aiProviders) ? u.aiProviders : []);
+    const presetOf = (id) => AI_PROVIDER_PRESETS.find((p) => p.id === id);
+    const typeName = (t) => (AI_MODEL_TYPES.find((x) => x.id === t) || AI_MODEL_TYPES[0]).name;
+    const parseActive = (key) => {
+      const k = String(key || '');
+      const i = k.indexOf(ACTIVE_SEP);
+      return i > 0 ? { pid: k.slice(0, i), mid: k.slice(i + ACTIVE_SEP.length) } : { pid: k, mid: '' };
+    };
+    const activeKeyOf = (pid, mid) => pid + ACTIVE_SEP + mid;
+    // 上一版存的单模型记录惰性补成一行
+    const oldModels = (p) => (Array.isArray(p.models) && p.models.length
+      ? p.models
+      : (p.model ? [{ id: 'm1', name: p.model, model: p.model, type: 'llm' }] : []));
+    function providerRows() {
+      const saved = savedProviders();
+      const byId = new Map(saved.map((p) => [p.id, p]));
+      const rows = AI_PROVIDER_PRESETS.map((pre) => {
+        const sv = byId.get(pre.id) || {};
+        // 用户保存过清单就用他自己的（可能删过预设模型）；否则给完整预设
+        const svModels = oldModels(sv);
+        const models = svModels.length ? svModels.slice() : pre.models.map((m) => Object.assign({}, m));
+        return Object.assign({}, pre, sv, {
+          id: pre.id, preset: pre.id, logo: pre.logo, kind: pre.kind, models
+        });
+      });
+      saved.forEach((p) => {
+        if (!presetOf(p.id)) rows.push(Object.assign({}, p, {
+          logo: '自', kind: '自定义', models: oldModels(p)
+        }));
+      });
+      return rows;
+    }
+    // 草稿：厂商弹窗里的编辑先落这里，点「保存」才提交（取消＝丢弃）
+    const aiDrafts = {};
+    const draftOf = (pid) => aiDrafts[pid] || null;
+    function currentRow() {
+      const a = parseActive(u.aiActiveProvider);
+      const p = providerRows().find((x) => x.id === a.pid);
+      if (!p) return null;
+      const m = (a.mid ? p.models.find((x) => x.id === a.mid) : p.models[0]) || null;
+      return m ? { provider: p, model: m, key: activeKeyOf(p.id, m.id) } : null;
+    }
+    function paintAiState() {
+      const on = !!u.aiDirectEnabled;
+      const st = $('ai-mm-state');
+      if (st) st.textContent = on ? '✅ 直连已启用' : '⏸ 未启用（走本机网关自动选模型）';
+      const cb = $('ai-mm-enabled'); if (cb) cb.checked = on;
+      const cur = $('ai-mm-current');
+      if (cur) {
+        const c = currentRow();
+        cur.innerHTML = c
+          ? '当前使用：<b>' + esc(c.provider.name) + '</b> · ' + esc(c.model.model || '') +
+            ' <em class="aip-type">' + esc(typeName(c.model.type)) + '</em>' +
+            (c.provider.keySet ? ' · 已配置' : ' · <em>还没填 API Key</em>')
+          : '当前使用：<b>本机网关自动选模型</b>（还没选模型）';
+      }
+    }
+    // 组装要提交的清单：来自 providerRows + 草稿（结构与后端完全一致）
+    function collectAiRows(overrides) {
+      const a = parseActive(u.aiActiveProvider);
+      const rows = [];
+      providerRows().forEach((p) => {
+        const saved = savedProviders().find((x) => x.id === p.id) || {};
+        const dr = draftOf(p.id);
+        const src = dr ? dr.models : (p.models || []);
+        const row = {
+          id: p.id,
+          preset: saved.preset || p.preset || 'custom',
+          name: (dr && dr.name) || saved.name || p.name || p.id,
+          baseUrl: (dr ? dr.baseUrl : (saved.baseUrl || p.baseUrl || '')) || '',
+          apiKey: (dr ? dr.apiKey : '') || '',
+          models: src.map((m) => ({
+            id: m.id, name: m.name || m.model || '', model: m.model || '', type: m.type || 'llm'
+          }))
+        };
+        // 只提交「有用」条目：已入库过 / 已配 Key / 刚输入 Key / 自定义 / 当前使用 / 改过内容。
+        // 已入库的必须继续提交——否则只想改个名字（没配 Key）的厂商会在下一次保存时被静默丢掉。
+        // 从没入过库的预设仍然跳过，避免后端为一堆没用到的地址逐个做 DNS 校验。
+        const persisted = !!saved.id;
+        if (persisted || saved.keySet || row.apiKey || row.preset === 'custom' || a.pid === p.id || (dr && dr.changed)) {
+          rows.push(Object.assign(row, (overrides && overrides[p.id]) || {}));
+        }
+      });
+      return rows;
+    }
+    async function saveAi(opt, okMsg) {
+      const o = opt || {};
+      const rows = collectAiRows(o.overrides).filter((r) => r.id !== o.skip);
+      const patch = { aiProviders: rows };
+      if (o.activeKey !== undefined) patch.aiActiveProvider = o.activeKey;
+      if (o.enabled !== undefined) patch.aiDirectEnabled = o.enabled;
+      if (o.patch) Object.assign(patch, o.patch);
+      // 删服务商 / 删当前模型 / 清 Key 时自动切回网关，避免启用着却指向空配置
+      const a = parseActive(u.aiActiveProvider);
+      if ((o.skip && o.skip === a.pid) || o.clearActive) {
+        patch.aiActiveProvider = ''; patch.aiDirectEnabled = false;
+      }
+      if (o.overrides) Object.keys(o.overrides).forEach((id) => {
+        if (id === a.pid && o.overrides[id].apiKey === '__clear__') {
+          patch.aiActiveProvider = ''; patch.aiDirectEnabled = false;
+        }
+      });
+      const rr = await Api.updateProfile(patch);
+      state.user = rr.data.user;
+      Object.assign(u, state.user);
+      Api.setSession(Api.token(), state.user);
+      renderProfile(c);
+      if (okMsg) toast(okMsg, true);
+      return rr;
+    }
+
+    // ---------- 主列表：一行一个厂商 ----------
+    function vendorRowHTML(p) {
+      const saved = savedProviders().find((x) => x.id === p.id) || {};
+      const dr = draftOf(p.id);
+      const keySet = dr ? (!!dr.apiKey || !!saved.keySet) : !!saved.keySet;
+      const n = (dr ? dr.models : (p.models || [])).length;
+      const canDel = (p.preset === 'custom' || p.id === 'legacy');
+      return '<div class="aip-vendor-row" data-pid="' + esc(p.id) + '">' +
+        '<span class="aip-logo">' + esc(p.logo || '自') + '</span>' +
+        '<button type="button" class="aip-vendor-name" data-act="edit-vendor" title="点击查看与编辑">' + esc(p.name) + '</button>' +
+        '<span class="aip-kind">' + esc(p.kind || '自定义') + '</span>' +
+        '<span class="aip-state' + (keySet ? ' ok' : '') + '">' +
+          (keySet ? '已配置 Key' : '未配置 Key') + ' · ' + n + ' 个模型</span>' +
+        '<span class="aip-cell-act">' +
+          '<button type="button" class="btn" data-act="edit-vendor">编辑</button>' +
+          (canDel ? '<button type="button" class="btn" data-act="del-vendor">删除</button>' : '') +
+        '</span>' +
+      '</div>';
+    }
+    function renderAiProviders() {
+      const box = $('ai-mm-list');
+      if (!box) return;
+      box.innerHTML = providerRows().map(vendorRowHTML).join('');
+      bindAiList();
+    }
+    // 事件委托：厂商行（点名称或「编辑」→ 打开厂商弹窗）
+    function bindAiList() {
+      const box = $('ai-mm-list');
+      if (!box || box.dataset.bound === '1') return;
+      box.dataset.bound = '1';
+      box.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('[data-act]');
+        if (!btn || !box.contains(btn)) return;
+        const rowEl = btn.closest('.aip-vendor-row');
+        const pid = rowEl ? rowEl.dataset.pid : '';
+        const act = btn.dataset.act;
+        btn.disabled = true;
+        try {
+          if (act === 'edit-vendor') {
+            openVendorEditor(pid);
+          } else if (act === 'del-vendor') {
+            if (!window.confirm('删除这个服务商及其所有模型？')) { btn.disabled = false; return; }
+            await saveAi({ skip: pid }, '已删除服务商');
+          }
+        } catch (e) { toast('操作失败：' + e.message); }
+        // 关键：必须复位。原先 edit-vendor 分支没复位，按钮一变灰就再也点不开（要重渲染才恢复）
+        finally { btn.disabled = false; }
+      });
+    }
+
+    // ---------- 厂商编辑弹窗（地址 + Key + 模型清单） ----------
+    function openVendorEditor(pid) {
+      const ed = $('aip-vendor-editor');
+      const p = providerRows().find((x) => x.id === pid);
+      if (!ed || !p) return;
+      const saved = savedProviders().find((x) => x.id === pid) || {};
+      const prev = draftOf(pid);
+      const draft = {
+        name: prev ? prev.name : (saved.name || p.name || ''),
+        baseUrl: prev ? prev.baseUrl : (saved.baseUrl || p.baseUrl || ''),
+        apiKey: prev ? prev.apiKey : '',
+        models: (prev ? prev.models : (p.models || [])).map((m) => ({
+          id: m.id, name: m.name || m.model || '', model: m.model || '', type: m.type || 'llm'
+        })),
+        activeKey: prev ? prev.activeKey : '',      // 草稿里选中的「当前使用」
+        removedActive: prev ? prev.removedActive : false,
+        changed: false
+      };
+      aiDrafts[pid] = draft;
+      ed._pid = pid;
+      ed._draft = draft;
+      ed._tests = {};   // 换厂商时清掉上一次的检测结果
+      const title = $('aip-ve-title'); if (title) title.textContent = draft.name || '—';
+      const nEl = $('aip-ve-name'); if (nEl) nEl.value = draft.name || '';
+      const bEl = $('aip-ve-base'); if (bEl) bEl.value = draft.baseUrl;
+      const kEl = $('aip-ve-key'); if (kEl) { kEl.value = ''; kEl.dataset.dirty = '0'; }
+      renderVendorModels(pid);
+      ed.removeAttribute('hidden');
+    }
+    function renderVendorModels(pid) {
+      const box = $('aip-ve-models');
+      const ed = $('aip-vendor-editor');
+      if (!box || !ed || !ed._draft) return;
+      const saved = savedProviders().find((x) => x.id === pid) || {};
+      const keySet = !!saved.keySet || !!ed._draft.apiKey;
+      const a = parseActive((ed._draft && ed._draft.activeKey) || u.aiActiveProvider);
+      const ms = ed._draft.models || [];
+      const first = ms.length ? ms[0].id : '';
+      box.innerHTML = ms.map((m) => {
+        const isActive = a.pid === pid && (a.mid ? a.mid === m.id : m.id === first);
+        const opts = AI_MODEL_TYPES.map((t) =>
+          '<option value="' + t.id + '"' + (t.id === (m.type || 'llm') ? ' selected' : '') + '>' +
+          esc(t.name) + '</option>').join('');
+        // 检测结果按模型 id 存在弹窗对象上，重绘（加/删模型）后仍在
+        const t = (ed._tests || {})[m.id] || null;
+        return '<div class="aip-ve-row' + (isActive ? ' is-active' : '') + '" data-mid="' + esc(m.id) + '">' +
+          '<input class="tb-in" data-mf="model" value="' + esc(m.model || '') +
+            '" placeholder="模型 ID，如 deepseek-chat" spellcheck="false" aria-label="模型名称"/>' +
+          '<select class="tb-in" data-mf="type" aria-label="模型类型">' + opts + '</select>' +
+          '<span class="aip-cell-state' + (isActive ? ' on' : '') + '">' +
+            (isActive ? '● 使用中' : (keySet ? '已配置' : '未配 Key')) + '</span>' +
+          '<span class="aip-cell-act">' +
+            '<button type="button" class="btn" data-act="test-model">检测</button>' +
+            '<button type="button" class="btn" data-act="use-model"' + (isActive ? ' disabled' : '') + '>' +
+              (isActive ? '使用中' : '设为当前') + '</button>' +
+            '<button type="button" class="btn" data-act="del-model">删除</button>' +
+          '</span>' +
+          // 检测结果单独占下一行整宽：长文案（上游报错）不会被截成一串省略号
+          '<span class="aip-cell-test' + (t ? (t.ok ? ' ok' : ' err') : '') +
+            '" data-test-for="' + esc(m.id) + '" title="' + esc(t ? (t.title || t.text) : '') + '">' +
+            esc(t ? t.text : '') + '</span>' +
+        '</div>';
+      }).join('') || '<div class="aip-empty">这个厂商还没有模型，点上面「＋ 添加模型」加一个。</div>';
+    }
+    // 厂商编辑弹窗事件（同样在 #ai-mm-list 之外，单独绑）
+    const aiVendorEditor = $('aip-vendor-editor');
+    if (aiVendorEditor && aiVendorEditor.dataset.bound !== '1') {
+      aiVendorEditor.dataset.bound = '1';
+      aiVendorEditor.addEventListener('click', async (ev) => {
+        if (ev.target === aiVendorEditor) { aiVendorEditor.setAttribute('hidden', ''); return; }
+        const btn = ev.target.closest('[data-act]');
+        if (!btn || !aiVendorEditor.contains(btn)) return;
+        const act = btn.dataset.act;
+        const pid = aiVendorEditor._pid;
+        const dr = aiVendorEditor._draft;
+        btn.disabled = true;
+        try {
+          if (act === 'cancel-vendor') {
+            delete aiDrafts[pid];
+            aiVendorEditor._draft = null;
+            aiVendorEditor.setAttribute('hidden', '');
+            btn.disabled = false; return;
+          } else if (act === 'save-vendor') {
+            const bEl = $('aip-ve-base');
+            const kEl = $('aip-ve-key');
+            const extra = {};
+            if (dr) {
+              const nEl2 = $('aip-ve-name');
+              if (nEl2) dr.name = nEl2.value.trim() || dr.name || '';
+              dr.baseUrl = bEl ? bEl.value.trim() : '';
+              dr.apiKey = (kEl && kEl.dataset.dirty === '1') ? kEl.value.trim() : '';
+              dr.changed = true;
+              // 草稿里选过「当前使用」/ 删掉了当前使用 → 一起提交
+              if (dr.activeKey) { extra.aiActiveProvider = dr.activeKey; extra.aiDirectEnabled = true; }
+              else if (dr.removedActive) { extra.aiActiveProvider = ''; extra.aiDirectEnabled = false; }
+            }
+            aiVendorEditor.setAttribute('hidden', '');
+            await saveAi({ patch: extra }, '服务商已保存');
+          } else if (act === 'clear-key') {
+            if (!window.confirm('清除这个服务商已保存的 API Key？')) { btn.disabled = false; return; }
+            const ov = {}; ov[pid] = { apiKey: '__clear__' };
+            await saveAi({ overrides: ov }, '已清除 API Key；如它是当前服务商会自动切回网关');
+          } else if (act === 'addmodel') {
+            if (!dr) { btn.disabled = false; return; }
+            const nid = 'm-' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36);
+            const m = { id: nid, name: '', model: '', type: 'llm' };
+            dr.models.push(m);
+            dr.changed = true;
+            renderVendorModels(pid);
+            // 新行直接把焦点落在「模型名称」输入框，边填边改草稿（不再弹第二层）
+            const inp = document.querySelector('#aip-ve-models .aip-ve-row[data-mid="' + nid + '"] [data-mf="model"]');
+            if (inp) { try { inp.focus(); } catch (e) {} }
+            btn.disabled = false; return;
+          } else if (act === 'test-model') {
+            // 检测：拿弹窗里正在编辑的模型名 / 地址 / Key 真打一次，结果就地写在这一行（不重绘，避免丢焦点）
+            const rowEl = btn.closest('.aip-ve-row');
+            const mid = rowEl ? rowEl.dataset.mid : '';
+            const m = (dr && (dr.models || []).find((x) => x.id === mid)) || null;
+            const modelName = m ? String(m.model || '').trim() : '';
+            if (!modelName) { toast('先在「模型 ID」里填模型名，再点检测'); btn.disabled = false; return; }
+            const bEl = $('aip-ve-base');
+            const kEl = $('aip-ve-key');
+            const cell = rowEl ? rowEl.querySelector('[data-test-for="' + mid + '"]') : null;
+            const paint = (res) => {
+              aiVendorEditor._tests = aiVendorEditor._tests || {};
+              aiVendorEditor._tests[mid] = res;
+              if (cell) {
+                cell.className = 'aip-cell-test ' + (res.ok ? 'ok' : 'err');
+                cell.textContent = res.text;
+                cell.title = res.title || res.text;
+              }
+            };
+            // 没填过 Key 就别发请求：直接说清楚，免得白等一轮还抛个 400
+            const savedP = savedProviders().find((x) => x.id === pid) || {};
+            const typedKey = (kEl && kEl.dataset.dirty === '1') ? String(kEl.value || '').trim() : '';
+            if (!typedKey && !savedP.keySet) {
+              paint({ ok: false, text: '✗ 这个服务商还没填 API Key', title: '先在「API Key」输入框粘贴 Key，再点检测' });
+              btn.disabled = false;
+              return;
+            }
+            const oldTxt = btn.textContent;
+            btn.textContent = '检测中…';
+            if (cell) { cell.className = 'aip-cell-test'; cell.textContent = '检测中…'; cell.title = ''; }
+            try {
+              const rr = await Api.post('/api/ai/test-provider', {
+                pid,
+                baseUrl: (bEl ? bEl.value.trim() : '') || (dr ? dr.baseUrl : ''),
+                // Key 只在这次输入过才传，否则后端复用库里已保存的那把
+                apiKey: (kEl && kEl.dataset.dirty === '1') ? kEl.value.trim() : '',
+                model: modelName
+              });
+              const d = (rr && rr.data) || {};
+              if (!d.ok) {
+                paint({
+                  ok: false,
+                  text: '✗ ' + (d.error || '不通'),
+                  title: (d.status ? 'HTTP ' + d.status + ' · ' : '') + (d.error || '')
+                });
+              } else {
+                const v = d.vision || {};
+                const vTxt = v.supported
+                  ? (v.ok ? '支持看图' : '看图不对（答「' + (v.note || '?') + '」）')
+                  : '不支持看图';
+                paint({
+                  ok: true,
+                  text: '✓ 通 · ' + (d.latencyMs || 0) + 'ms · ' + vTxt,
+                  title: '模型 ' + d.model + (d.reply ? ' · 回复「' + d.reply + '」' : '') +
+                    (d.note ? ' · ' + d.note : '') + (v.note ? ' · 看图答「' + v.note + '」' : '')
+                });
+              }
+            } catch (e) {
+              paint({ ok: false, text: '✗ ' + (e.message || '检测失败'), title: e.message || '' });
+            }
+            btn.textContent = oldTxt;
+            btn.disabled = false;
+            return;
+          } else if (act === 'use-model') {
+            const rowEl = btn.closest('.aip-ve-row');
+            const mid = rowEl ? rowEl.dataset.mid : '';
+            if (dr) { dr.activeKey = activeKeyOf(pid, mid); dr.removedActive = false; }
+            renderVendorModels(pid);
+            btn.disabled = false; return;
+          } else if (act === 'del-model') {
+            if (!window.confirm('删除这个模型？')) { btn.disabled = false; return; }
+            const rowEl = btn.closest('.aip-ve-row');
+            const mid = rowEl ? rowEl.dataset.mid : '';
+            const a = parseActive(u.aiActiveProvider);
+            const isCur = a.pid === pid && a.mid === mid;
+            if (dr) {
+              dr.models = (dr.models || []).filter((x) => x.id !== mid);
+              if (isCur) dr.removedActive = true;
+              if (dr.activeKey === activeKeyOf(pid, mid)) dr.activeKey = '';
+            }
+            renderVendorModels(pid);
+            btn.disabled = false; return;
+          }
+        } catch (e) { toast('操作失败：' + e.message); }
+        finally { btn.disabled = false; }
+      });
+      // 弹窗内「模型名称 / 类型 / 服务商名称」直接改：即时写入草稿，不重绘（否则会丢焦点）
+      const draftModelOf = (el) => {
+        const rowEl = el.closest('.aip-ve-row');
+        const mid = rowEl ? rowEl.dataset.mid : '';
+        const dr = aiVendorEditor._draft;
+        if (!dr || !mid) return null;
+        return (dr.models || []).find((x) => x.id === mid) || null;
+      };
+      aiVendorEditor.addEventListener('input', (ev) => {
+        const t = ev.target;
+        if (t.id === 'aip-ve-name') {
+          const dr = aiVendorEditor._draft;
+          if (dr) { dr.name = t.value; dr.changed = true; }
+          const ti = $('aip-ve-title');
+          if (ti) ti.textContent = t.value.trim() || '—';
+          return;
+        }
+        const inp = t.closest('[data-mf="model"]');
+        if (!inp) return;
+        const m = draftModelOf(inp);
+        if (!m) return;
+        m.model = inp.value;
+        m.name = inp.value;
+        if (aiVendorEditor._draft) aiVendorEditor._draft.changed = true;
+      });
+      aiVendorEditor.addEventListener('change', (ev) => {
+        const sel = ev.target.closest('select[data-mf="type"]');
+        if (!sel) return;
+        const m = draftModelOf(sel);
+        if (!m) return;
+        m.type = sel.value;
+        if (aiVendorEditor._draft) aiVendorEditor._draft.changed = true;
+      });
+    }
+
+    renderAiProviders();
+    paintAiState();
+
+    // 保存全部：提交所有厂商草稿
+    const aiSaveAll = $('ai-mm-save-all');
+    if (aiSaveAll) aiSaveAll.onclick = async () => {
+      aiSaveAll.disabled = true;
+      try { await saveAi({}, '模型配置已保存'); }
+      catch (e) { toast('保存失败：' + e.message); aiSaveAll.disabled = false; }
+    };
+    // 总开关：没选模型 / 没填 Key 不许启用（后端同样明确报错，绝不静默回落网关）
+    const aiEnabledBox = $('ai-mm-enabled');
+    if (aiEnabledBox) aiEnabledBox.onchange = async () => {
+      const next = aiEnabledBox.checked;
+      aiEnabledBox.disabled = true;
+      try {
+        if (next) {
+          const rows = collectAiRows({});
+          const a = parseActive(u.aiActiveProvider);
+          const p = rows.find((r) => r.id === a.pid);
+          const saved = savedProviders().find((x) => x.id === a.pid) || {};
+          const hasModel = !!(p && p.models && p.models.length && p.models.some((m) => m.model));
+          if (!p || !hasModel || (!p.apiKey && !saved.keySet)) {
+            toast('启用前请先填好 API Key，并在某个模型行点「设为当前」');
+            aiEnabledBox.checked = false; return;
+          }
+        }
+        await saveAi({ enabled: next }, next ? 'AI 直连已启用' : '已切回本机网关自动选模型');
+      } catch (e) { toast('操作失败：' + e.message); aiEnabledBox.checked = !next; }
+      finally { aiEnabledBox.disabled = false; }
+    };
+    // 自定义服务商：加一条空白记录，再点名称填详情
+    const aiAdd = $('ai-mm-add');
+    if (aiAdd) aiAdd.onclick = async () => {
+      const name = (window.prompt('给这个自定义服务商起个名字：', '我的服务商') || '').trim();
+      if (!name) return;
+      const id = 'custom-' + Date.now().toString(36);
+      const rows = collectAiRows({});
+      rows.push({ id, preset: 'custom', name, baseUrl: '', apiKey: '',
+        models: [{ id: 'm1', name: '', model: '', type: 'llm' }] });
+      try {
+        const rr = await Api.updateProfile({ aiProviders: rows });
+        state.user = rr.data.user;
+        Object.assign(u, state.user);
+        Api.setSession(Api.token(), state.user);
+        renderProfile(c);
+        toast('已添加，点它的名称填接口地址、模型名和 API Key', true);
+      } catch (e) { toast('添加失败：' + e.message); }
+    };
 
     // 防浏览器密码自动填充：注册/登录后 Chrome 会把保存的登录密码填进任意 type=password
     // 输入框（autocomplete="off" 会被无视）。三重防护：
@@ -4126,6 +5760,8 @@
       } catch (e) { toast('清除失败：' + e.message); }
     };
 
+    // 多模型配置的保存 / 切换 / 清除 / 自定义都在上面的 AI 面板里独立处理，
+    // 不再参与页级「保存」（页级保存只管个人信息 / 购房需求 / 高德 Key）。
     // 自动退出时长：改动立即生效并重新计时，不走页级「保存」按钮
     const idleSel = $('idle-minutes');
     const paintIdleState = () => {
@@ -4191,6 +5827,10 @@
     if (dOn) dOn.onchange = paintDeadline;
     if (dDate) dDate.onchange = paintDeadline;
     paintDeadline();
+    // ---------- 检查更新（只读公开 version.json，不上传任何数据；仅提示 + 给命令，不碰服务器文件） ----------
+    const chkBtn = $('pv-check-update');
+    if (chkBtn) chkBtn.onclick = () => checkForUpdate(bv.tag, $('pv-update'));
+
     const save = $('pf-save');
     if (save) save.onclick = async () => {
       const name = $('pf-name').value.trim();
@@ -4202,8 +5842,9 @@
           const up = await Store.uploadFile(pendingFile, 'avatar');
           avatar = up.url || '';
         }
-        // 购房需求 + 最晚提醒（与个人信息一起保存）
-        const demand = {
+        // 购房需求 + 最晚提醒（与个人信息一起保存）。
+        // demand 整体覆盖，必须先合并旧值，否则会清掉「看房驾驶 / 购房计划」的数据。
+        const demand = Object.assign({}, demandNow(), {
           budgetMax: parseFloat($('d-budgetMax').value) || '',
           districts: $('d-districts').value.trim(),
           layout: $('d-layout').value.trim(),
@@ -4214,12 +5855,14 @@
           notes: $('d-notes').value.trim(),
           deadlineEnabled: $('d-deadline-on').checked,
           deadlineDate: $('d-deadline-on').checked ? $('d-deadline-date').value : ''
-        };
+        });
         // 高德 Key 默认不回显：留空 = 不修改（后端 COALESCE 保持原值）。
         // 只认「真人输入过」的字段（data-dirty），浏览器密码自动填充的值一律忽略，
         // 避免把登录密码误存成高德 Key。
         const patch = { name, avatar, demand };
         const jsEl = $('amap-jskey'), secEl = $('amap-security');
+        // 多模型清单由 AI 分组内的按钮独立提交，页级「保存」绝不碰这些字段：
+        // 旧的单模型输入框已移除，若还按旧逻辑读空值会把用户配置清空。
         const newJsKey = (jsEl && jsEl.dataset.dirty === '1') ? jsEl.value.trim() : '';
         const newSec = (secEl && secEl.dataset.dirty === '1') ? secEl.value.trim() : '';
         // 弱格式兜底：只挡明显不是 Key 的值（太短 / 太长 / 含空格或特殊符号，例如被误填的登录密码），
@@ -4248,6 +5891,730 @@
         toast(keyChanged ? '设置已保存，刷新页面后新 Key 生效' : '设置已保存', true);
       } catch (err) { msg.textContent = err.message; }
     };
+  }
+
+  // ==================================================================
+  // 看房驾驶 / 购房计划
+  // 约定（勿改）：
+  //  ① 数据只存 users.demand 的 dashboard / plan 子键，统一经 saveDemandSection() 合并保存。
+  //     后端 PATCH /api/auth/me 早已支持 demand → 零后端改动、无需重启 8787。
+  //  ② 所有房贷数字只调文件顶部唯一的 computeMortgage()；本区只收集表单值 + 渲染。
+  //     利率敏感性 / 还款方式对比只是换参数重复调用同一个函数，绝不另写公式。
+  //  ③ 金额口径：房屋总价 / 首付 / 贷款 / 目标 / 已存用「万」，月供 / 工资 / 费用用「元」。
+  // ==================================================================
+  const dashWan = (v) => (Number(v) || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + ' 万';
+  const dashYuan = (v) => '¥' + Math.round(Number(v) || 0).toLocaleString('zh-CN');
+  const dashPct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, Math.round(a / b * 100))) : 0);
+  const dashRatio = (v) => Math.max(0, num(v) || 0) / 100;
+  const dashUID = () => 'x' + Math.random().toString(36).slice(2, 9) + Date.now().toString(36);
+  const dashDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? String(s) : '';
+
+  const DASH_DEFAULT = {
+    totalPrice: '', downPayment: '', loanType: '商业贷款（商贷）', years: 30,
+    commRate: 3.0, fundRate: 2.6, fundAmt: '', method: '等额本息',
+    savingTarget: '', savingSaved: '', downTarget: '', downSaved: '',
+    savingTargetTouched: false, downTargetTouched: false,
+    monthlySaving: '', salary: '', monthlyOverride: '',
+    feeDeed: 1, feeAgent: 2, feeMaintenance: 1, feeOther: 0.5, feeReno: ''
+  };
+  const DASH_LOAN_TYPES = ['商业贷款（商贷）', '公积金贷款', '组合贷（公积金+商贷）', '全款'];
+  const DASH_METHODS = ['等额本息', '等额本金'];
+
+  function dashData() { return Object.assign({}, DASH_DEFAULT, demandNow().dashboard || {}); }
+  // 唯一的「表单值 → computeMortgage 参数」适配层；over 只用于敏感性对比换利率/还款方式
+  function dashArgs(d, over) {
+    const price = Math.max(0, num(d.totalPrice) || 0);
+    const totalPrice = price * 10000;
+    const cash = d.loanType === '全款';
+    const downWan = Math.max(0, num(d.downPayment) || 0); // 万；与 price 同单位才能直接相除
+    const downRatio = cash ? 1 : (price > 0 ? Math.min(1, downWan / price) : 0);
+    const loanAmt = totalPrice * (1 - downRatio);
+    const fundAmt = Math.min(Math.max(0, (num(d.fundAmt) || 0) * 10000), loanAmt);
+    const commAmt = Math.max(0, loanAmt - fundAmt);
+    return Object.assign({
+      mode: 'price', totalPrice, downRatio,
+      years: d.years || 30,
+      loanType: LOAN_TYPE_TO_CALC[d.loanType] || 'comm',
+      commRate: d.commRate, fundRate: d.fundRate, commAmt, fundAmt,
+      method: REPAY_TO_CALC[d.method] || 'bx'
+    }, over || {});
+  }
+  function dashCalc(d, over) { return computeMortgage(dashArgs(d, over)); }
+  function dashMonthly(d, R) {
+    const mo = num(d.monthlyOverride);
+    return (mo != null && mo > 0) ? mo : R.monthlyFirst;
+  }
+  function dashRing(pct, label, side, color) {
+    const C = 2 * Math.PI * 52, p = Math.max(0, Math.min(100, pct));
+    return `<div class="dash-ring-card">
+      <svg class="dash-ring" viewBox="0 0 130 130" aria-hidden="true">
+        <circle cx="65" cy="65" r="52" fill="none" stroke="var(--line-strong)" stroke-width="11"/>
+        <circle cx="65" cy="65" r="52" fill="none" stroke="${color}" stroke-width="11" stroke-linecap="round"
+          stroke-dasharray="${(p / 100 * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 65 65)"/>
+        <text x="65" y="62" text-anchor="middle" class="dash-ring-num">${p}%</text>
+        <text x="65" y="83" text-anchor="middle" class="dash-ring-cap">${esc(label)}</text>
+      </svg>
+      <div class="dash-ring-side">${side}</div>
+    </div>`;
+  }
+  function dashPressure(ratio, noLoan) {
+    if (noLoan) return { label: '全款购房', color: 'var(--muted)', hint: '没有贷款，不存在月供压力', cls: 'na' };
+    if (!(ratio > 0)) return { label: '未测算', color: 'var(--muted)', hint: '填写月工资后自动测算', cls: 'na' };
+    if (ratio <= 0.3) return { label: '健康', color: 'var(--success)', hint: '月供压力小，生活仍有弹性', cls: 'ok' };
+    if (ratio <= 0.4) return { label: '适中', color: 'var(--aux-cyan)', hint: '可接受，但不建议再加杠杆', cls: 'mid' };
+    if (ratio <= 0.5) return { label: '偏高', color: 'var(--warning)', hint: '抗风险能力变弱，务必留足应急金', cls: 'warn' };
+    return { label: '高危', color: 'var(--error)', hint: '超过银行 50% 审批红线，建议降杠杆', cls: 'bad' };
+  }
+  function dashGauge(ratioPct, st) {
+    const R = 76, L = Math.PI * R, p = Math.max(0, Math.min(100, ratioPct));
+    return `<svg class="dash-gauge" viewBox="0 0 200 118" aria-hidden="true">
+      <path d="M24 100 A76 76 0 0 1 176 100" fill="none" stroke="var(--line-strong)" stroke-width="14" stroke-linecap="round"/>
+      <path d="M24 100 A76 76 0 0 1 176 100" fill="none" stroke="${st.color}" stroke-width="14" stroke-linecap="round"
+        stroke-dasharray="${(p / 100 * L).toFixed(1)} ${L.toFixed(1)}"/>
+      <text x="100" y="86" text-anchor="middle" class="dash-gauge-num">${Math.round(ratioPct)}%</text>
+      <text x="100" y="108" text-anchor="middle" class="dash-gauge-cap">月供 / 月工资</text>
+    </svg>`;
+  }
+  function dashEta(target, saved, monthly) {
+    const gap = Math.max(0, (num(target) || 0) - (num(saved) || 0));
+    if (gap <= 0 && (num(target) || 0) > 0) return '<div class="dash-eta done">🎉 目标已达成</div>';
+    if (!(num(monthly) > 0)) return `<div class="dash-eta">还差 <b>${dashWan(gap)}</b> · 填「每月可存」可预测达成时间</div>`;
+    const months = Math.ceil(gap / num(monthly));
+    const dt = new Date(); dt.setMonth(dt.getMonth() + months);
+    return `<div class="dash-eta">还差 <b>${dashWan(gap)}</b> · 按每月 ${dashWan(monthly)} 还需 <b>${months}</b> 个月，约 ${dt.getFullYear()} 年 ${dt.getMonth() + 1} 月达成</div>`;
+  }
+  function dashFees(d, R) {
+    const price = (num(d.totalPrice) || 0) * 10000;
+    const rows = [
+      ['首付款', R.downPay], ['契税', price * dashRatio(d.feeDeed)],
+      ['中介费', price * dashRatio(d.feeAgent)], ['维修基金', price * dashRatio(d.feeMaintenance)],
+      ['其它杂费', price * dashRatio(d.feeOther)], ['装修预算', (num(d.feeReno) || 0) * 10000]
+    ];
+    return { rows, total: rows.reduce((s, x) => s + x[1], 0) };
+  }
+  async function dashRecentFollowups(props) {
+    const all = await Promise.all(props.slice(0, 6).map(async (p) => {
+      try {
+        const rs = await Store.listFollowups(p.id);
+        return (rs || []).map((r) => Object.assign({}, r, { _title: p.title || (p.location || {}).community || '房源' }));
+      } catch (e) { return []; }
+    }));
+    return all.flat().sort((a, b) => String(b.happened_date || b.created_at || '')
+      .localeCompare(String(a.happened_date || a.created_at || ''))).slice(0, 3);
+  }
+
+  // 购房设定表单：首页只读、购房计划页可编辑，共用同一份字段结构（勿写两套）
+  function dashFieldHTML(k, label, type, ph, d) {
+    return `<div class="field"><label>${esc(label)}</label><input type="${type || 'text'}" data-dash="${k}" value="${esc(d[k] == null ? '' : d[k])}" placeholder="${esc(ph || '')}" ${type === 'number' ? 'step="any" min="0"' : ''}/></div>`;
+  }
+  function dashSelectHTML(k, label, arr, d) {
+    const opt = (a, cur) => a.map((x) => `<option value="${esc(x)}" ${x === cur ? 'selected' : ''}>${esc(x)}</option>`).join('');
+    return `<div class="field"><label>${esc(label)}</label><select data-dash="${k}">${opt(arr, d[k])}</select></div>`;
+  }
+  // 目标值（存款 / 首付）未手动改过时，自动跟随总价 / 首付
+  function dashApplyAutoTargets(d) {
+    if (!d.savingTarget && !d.savingTargetTouched) d.savingTarget = d.totalPrice != null ? d.totalPrice : '';
+    if (!d.downTarget && !d.downTargetTouched) d.downTarget = d.downPayment != null ? d.downPayment : '';
+  }
+  // 可编辑表单 HTML（购房计划页用）；首页只读视图 dashViewHTML 是它的只读镜像
+  function dashFormHTML(d, props) {
+    const purchasedOpts = (props || []).filter(isPurchased).map((p) =>
+      `<option value="${esc(p.id)}">${esc(p.title || (p.location || {}).community || '已购房源')}</option>`).join('');
+    return `
+      <div class="dash-form-grid">
+        <div class="dash-fsec">
+          <h4>购房基础信息</h4>
+          <div class="form-grid">
+            ${dashFieldHTML('totalPrice', '房屋总价（万）', 'number', '例如 180', d)}
+            ${dashFieldHTML('downPayment', '首付（万）', 'number', '填金额，自动算贷款', d)}
+            ${dashSelectHTML('loanType', '贷款方式', DASH_LOAN_TYPES, d)}
+            ${dashSelectHTML('method', '还款方式', DASH_METHODS, d)}
+            ${dashFieldHTML('years', '贷款年限（年）', 'number', '1 ~ 30', d)}
+            ${dashFieldHTML('commRate', '商贷利率（%）', 'number', '默认 3.0', d)}
+            ${dashFieldHTML('fundRate', '公积金利率（%）', 'number', '默认 2.6', d)}
+            ${dashFieldHTML('fundAmt', '公积金金额（万，组合贷）', 'number', '组合贷必填', d)}
+          </div>
+        </div>
+        <div class="dash-fsec">
+          <h4>进度与收入</h4>
+          <div class="form-grid">
+            ${dashFieldHTML('savingTarget', '存款目标（万）', 'number', '填总价后自动带入', d)}
+            ${dashFieldHTML('savingSaved', '存款已存（万）', 'number', '手动填写', d)}
+            ${dashFieldHTML('downTarget', '首付目标（万）', 'number', '填首付后自动带入', d)}
+            ${dashFieldHTML('downSaved', '首付已存（万）', 'number', '手动填写', d)}
+            ${dashFieldHTML('monthlySaving', '每月可存（万）', 'number', '用于预测达成时间', d)}
+            ${dashFieldHTML('salary', '月工资（元）', 'number', '用于月供压力测算', d)}
+            ${dashFieldHTML('monthlyOverride', '月供（元，留空用自动值）', 'number', '一般不用填', d)}
+          </div>
+        </div>
+        <div class="dash-fsec">
+          <h4>一次性费用比例（%）</h4>
+          <div class="form-grid">
+            ${dashFieldHTML('feeDeed', '契税', 'number', '1', d)}
+            ${dashFieldHTML('feeAgent', '中介费', 'number', '2', d)}
+            ${dashFieldHTML('feeMaintenance', '维修基金', 'number', '1', d)}
+            ${dashFieldHTML('feeOther', '其它杂费', 'number', '0.5', d)}
+            ${dashFieldHTML('feeReno', '装修预算（万）', 'number', '选填', d)}
+          </div>
+        </div>
+      </div>
+      <div class="dash-actions">
+        <button class="btn sm" id="dash-from-budget" type="button">从购房需求预算带入</button>
+        <select id="dash-pick-purchased" class="dash-mini-sel"><option value="">选择已购房源…</option>${purchasedOpts}</select>
+        <button class="btn sm" id="dash-from-purchased" type="button">带入已购房源</button>
+        <button class="btn sm" id="dash-go-mortgage" type="button">打开房贷计算 →</button>
+      </div>`;
+  }
+  // 首页只读视图（看房驾驶用）；编辑入口在购房计划页
+  function dashViewHTML(d) {
+    const v = (x) => (x == null || x === '') ? '—' : esc(x);
+    const w = (x, u) => (x == null || x === '') ? '—' : (esc(x) + ' ' + u);
+    const sec = (title, rows) => `<div class="dash-fsec"><h4>${esc(title)}</h4><div class="dash-view-grid">${rows.map(([k, val]) => `<div class="kv"><span class="k">${esc(k)}</span><span>${val}</span></div>`).join('')}</div></div>`;
+    return `<div class="dash-form-grid dash-form-grid--view">
+      ${sec('购房基础信息', [
+        ['房屋总价', w(d.totalPrice, '万')], ['首付', w(d.downPayment, '万')],
+        ['贷款方式', v(d.loanType)], ['还款方式', v(d.method)],
+        ['贷款年限', w(d.years, '年')], ['商贷利率', w(d.commRate, '%')],
+        ['公积金利率', w(d.fundRate, '%')], ['公积金金额', w(d.fundAmt, '万')]
+      ])}
+      ${sec('进度与收入', [
+        ['存款目标', w(d.savingTarget, '万')], ['存款已存', w(d.savingSaved, '万')],
+        ['首付目标', w(d.downTarget, '万')], ['首付已存', w(d.downSaved, '万')],
+        ['每月可存', w(d.monthlySaving, '万')], ['月工资', w(d.salary, '元')],
+        ['月供(手动)', w(d.monthlyOverride, '元')]
+      ])}
+      ${sec('一次性费用比例（%）', [
+        ['契税', v(d.feeDeed)], ['中介费', v(d.feeAgent)], ['维修基金', v(d.feeMaintenance)],
+        ['其它杂费', v(d.feeOther)], ['装修预算', w(d.feeReno, '万')]
+      ])}
+    </div>`;
+  }
+  // 把可编辑表单的事件与「目标自动跟随」逻辑接到宿主容器（首页只读、计划页可编辑共用一套）
+  function wireDashForm(host, d, onChange) {
+    function setFieldSilent(k, val) {
+      d[k] = val;
+      const el = host.querySelector(`[data-dash="${k}"]`);
+      if (el) el.value = val == null ? '' : val;
+    }
+    function onField(e) {
+      const el = e.target.closest('[data-dash]');
+      if (!el) return;
+      const k = el.dataset.dash;
+      d[k] = el.value;
+      if (k === 'savingTarget') d.savingTargetTouched = true;
+      if (k === 'downTarget') d.downTargetTouched = true;
+      if (k === 'totalPrice' && !d.savingTargetTouched) setFieldSilent('savingTarget', el.value);
+      if (k === 'downPayment' && !d.downTargetTouched) setFieldSilent('downTarget', el.value);
+      if (onChange) onChange();
+    }
+    host.addEventListener('input', onField);
+    host.addEventListener('change', onField);
+    dashApplyAutoTargets(d);
+    return { setFieldSilent };
+  }
+
+  async function renderDashboard(c) {
+    if (!(state.properties && state.properties.length)) {
+      try { state.properties = await Store.list(); } catch (e) { state.properties = []; }
+    }
+    const props = state.properties || [];
+    const d = dashData();
+    dashApplyAutoTargets(d);
+    const recent = await dashRecentFollowups(props);
+    const plan = planData();
+
+    c.innerHTML = `
+      <div class="dash-wrap dash-workspace">
+        <div class="dash-results" id="dash-results">
+          <div class="dash-kpi-band" id="dash-kpi-band"></div>
+          <div class="dash-grid" id="dash-columns">
+            <div class="dash-col" id="dash-col-l">
+              <div class="card-block dash-view">
+                <h3>购房设定<small>只读，点「编辑购房设定」到购房计划页修改</small><button class="dash-edit-link" id="dash-edit-btn" type="button">编辑购房设定</button></h3>
+                ${dashViewHTML(d)}
+              </div>
+              <div class="dash-result" id="dash-fees"></div>
+              <div class="dash-result" id="dash-funnel"></div>
+            </div>
+            <div class="dash-col" id="dash-col-r">
+              <div id="dash-results-r"></div>
+              <div class="dash-result" id="dash-sens"></div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    $('dash-edit-btn').onclick = () => setView('plan');
+
+    paintDashboard(props, d, recent, plan);
+  }
+
+  // 看房驾驶（只读版，第 29 轮定稿内容）：购房设定只读 + KPI + 看房漏斗与近期待办 + 贷款测算 + 资金进度 + 月供压力 + 一次性现金总需求 + 利率与还款方式敏感性
+  // 编辑入口在购房计划页；所有数字只来自 dashCalc / dashFees / dashPressure 等单一数据源，不另写公式
+  function paintDashboard(props, d, recent, plan) {
+    const R = dashCalc(d);
+    const monthly = dashMonthly(d, R);
+    const noLoan = d.loanType === '全款' || !(R.loanAmt > 0);
+    const salary = num(d.salary) || 0;
+    const ratio = salary > 0 ? monthly / salary : 0;
+    const st = dashPressure(ratio, noLoan);
+    const saveTarget = num(d.savingTarget) || 0, saveNow = num(d.savingSaved) || 0;
+    const downTarget = num(d.downTarget) || 0, downNow = num(d.downSaved) || 0;
+    const fees = dashFees(d, R);
+    const cr = num(d.commRate) || 0, fr = num(d.fundRate) || 0;
+    const atRate = (delta) => dashCalc(d, { commRate: Math.max(0, cr + delta), fundRate: Math.max(0, fr + delta) }).monthlyFirst;
+    const otherMethod = (REPAY_TO_CALC[d.method] || 'bx') === 'bx' ? 'bj' : 'bx';
+    const alt = dashCalc(d, { method: otherMethod });
+    const altName = otherMethod === 'bj' ? '等额本金' : '等额本息';
+    const cnt = (s) => props.filter((p) => (txOf(p).status || '在售') === s).length;
+
+    const kpis = [
+      ['在库房源', props.length, '📋', 'primary'], ['待看房源', cnt('待看'), '🕒', 'orange'],
+      ['已购房源', props.filter(isPurchased).length, '🏡', 'green'], ['收藏房源', props.filter((p) => p.favorite).length, '⭐', 'cyan']
+    ].map(([k, v, ico, c]) => `<div class="dash-kpi kpi-c-${c}"><span class="dash-kpi-ico">${ico}</span><div class="kpi-txt"><b>${v}</b><span>${esc(k)}</span></div></div>`).join('');
+
+    const funnel = ['在售', '待看', '已售', '已下架', '已购'].map((s) => {
+      const n = cnt(s), p = props.length ? Math.round(n / props.length * 100) : 0;
+      return `<div class="dash-funnel-row"><span>${esc(s)}</span><div class="dash-bar"><i style="width:${p}%"></i></div><b>${n}</b></div>`;
+    }).join('');
+
+    const todos = (plan.milestones || []).filter((x) => x && x.status !== '已完成' && dashDate(x.planDate))
+      .sort((a, b) => a.planDate.localeCompare(b.planDate)).slice(0, 3);
+    const followRows = recent.length ? recent.map((r) =>
+      `<li><span class="dash-li-tag">跟进</span> ${esc(r._title)} · ${esc(r.content || r.type || '')} <em>${esc(r.happened_date || '')}</em></li>`).join('')
+      : '<li class="muted">暂无跟进记录</li>';
+    const todoRows = todos.length ? todos.map((x) =>
+      `<li><span class="dash-li-tag plan">计划</span> ${esc(x.title)} <em>${esc(x.planDate)}</em></li>`).join('')
+      : '<li class="muted">购房计划里暂无带日期的未完成节点</li>';
+
+    const loanCard = `
+      <div class="card-block">
+        <h3>贷款测算结果<small>与「房贷计算」同一套公式</small></h3>
+        <div class="dash-metrics">
+          <div><span>预计贷款总额</span><b>${dashWan(R.loanAmt / 10000)}</b></div>
+          <div><span>首付</span><b>${dashWan(R.downPay / 10000)}</b></div>
+          <div><span>${d.method === '等额本金' ? '首月月供（逐月递减）' : '月供（每月固定）'}</span><b>${dashYuan(R.monthlyFirst)}</b></div>
+          <div><span>总利息</span><b>${dashWan(R.totalInterest / 10000)}</b></div>
+          <div><span>首年还款</span><b>${dashWan(R.annualFirst / 10000)}</b></div>
+          <div><span>还款期数</span><b>${R.months} 期</b></div>
+        </div>
+        ${d.loanType === '组合贷（公积金+商贷）' ? '<div class="dash-tip">组合贷：商贷与公积金分别按各自利率计算后按月相加（口径与房贷计算一致）。</div>' : ''}
+      </div>`;
+
+    const savingCard = `
+      <div class="card-block">
+        <h3>资金进度<small>目标可手改，两个「已存」各自独立</small></h3>
+        <div class="dash-rings">
+          ${dashRing(dashPct(saveNow, saveTarget), '存款进度',
+            `<b>${dashWan(saveNow)} / ${dashWan(saveTarget)}</b>${dashEta(saveTarget, saveNow, d.monthlySaving)}`, 'var(--primary)')}
+          ${dashRing(dashPct(downNow, downTarget), '首付进度',
+            `<b>${dashWan(downNow)} / ${dashWan(downTarget)}</b>${dashEta(downTarget, downNow, d.monthlySaving)}`, 'var(--aux-green)')}
+        </div>
+      </div>`;
+
+    const pressureCard = `
+      <div class="card-block">
+        <h3>月供压力<small>工资 ${dashYuan(salary)} · 月供 ${dashYuan(monthly)}</small></h3>
+        <div class="dash-pressure">
+          ${dashGauge(ratio * 100, st)}
+          <div class="dash-pressure-side">
+            <div class="dash-health ${st.cls}">${esc(st.label)}</div>
+            <div class="muted">${esc(st.hint)}</div>
+            <div class="kv"><span class="k">月供后剩余</span><span>${dashYuan(Math.max(0, salary - monthly))}</span></div>
+            <div class="kv"><span class="k">收入覆盖倍数</span><span>${salary > 0 && monthly > 0 ? (salary / monthly).toFixed(2) + ' 倍' : '—'}</span></div>
+            <div class="kv"><span class="k">建议月供上限（工资 30%）</span><span>${dashYuan(salary * 0.3)}</span></div>
+            <div class="dash-scale"><i class="ok"></i>≤30% 健康 <i class="mid"></i>30–40% 适中 <i class="warn"></i>40–50% 偏高 <i class="bad"></i>&gt;50% 高危</div>
+          </div>
+        </div>
+      </div>`;
+
+    const feesCard = `
+      <div class="card-block">
+        <h3>一次性现金总需求<small>首付之外还要准备的钱</small></h3>
+        <div class="dash-fees">
+          ${fees.rows.map(([k, v]) => `<div class="kv"><span class="k">${esc(k)}</span><span>${dashYuan(v)}</span></div>`).join('')}
+          <div class="dash-fee-total"><span>合计需现金</span><b>${dashWan(fees.total / 10000)}</b></div>
+        </div>
+        <div class="dash-tip">这里只作提醒，不会覆盖你上面手填的两个进度目标。</div>
+      </div>`;
+
+    const sensCard = `
+      <div class="card-block">
+        <h3>利率与还款方式敏感性<small>同一公式换参数测算</small></h3>
+        <table class="dash-table"><thead><tr><th>情形</th><th>月供</th><th>说明</th></tr></thead><tbody>
+          <tr><td>利率 -0.25%</td><td>${dashYuan(atRate(-0.25))}</td><td>商贷 / 公积金同时下调</td></tr>
+          <tr class="cur"><td>当前方案</td><td>${dashYuan(R.monthlyFirst)}</td><td>${esc(d.method)} · ${R.years} 年</td></tr>
+          <tr><td>利率 +0.25%</td><td>${dashYuan(atRate(0.25))}</td><td>商贷 / 公积金同时上调</td></tr>
+          <tr><td>换成${altName}</td><td>${dashYuan(alt.monthlyFirst)}</td><td>总利息 ${dashWan(alt.totalInterest / 10000)}（当前 ${dashWan(R.totalInterest / 10000)}）</td></tr>
+        </tbody></table>
+      </div>`;
+
+    const funnelCard = `
+      <div class="card-block">
+        <h3>看房漏斗与近期待办</h3>
+        <div class="dash-funnel">${funnel}</div>
+        <div class="dash-two-col">
+          <div><h4>最近跟进</h4><ul class="dash-list">${followRows}</ul></div>
+          <div><h4>计划里临近的节点</h4><ul class="dash-list">${todoRows}</ul></div>
+        </div>
+      </div>`;
+
+    $('dash-kpi-band').innerHTML = `<div class="dash-kpis">${kpis}</div>`;
+    $('dash-fees').innerHTML = feesCard;
+    $('dash-sens').innerHTML = sensCard;
+    $('dash-funnel').innerHTML = funnelCard;
+    $('dash-results-r').innerHTML = loanCard + savingCard + pressureCard;
+  }
+
+
+  // ---- 看房驾驶 v2 卡片用到的数据聚合辅助（区域 / 装修），被上方 paintDashboard 复用，不另写公式 ----
+  function anaRegion(props, d) {
+    const map = {};
+    props.forEach((p) => {
+      const dist = (p.location && p.location.district) || '';
+      if (!dist) return;
+      if (!map[dist]) map[dist] = { count: 0, sum: 0 };
+      map[dist].count++; map[dist].sum += (num(txOf(p).totalPrice) || 0);
+    });
+    const rows = Object.keys(map).map((k) => ({ name: k, count: map[k].count, avg: map[k].sum / map[k].count }))
+      .sort((a, b) => b.count - a.count);
+    const maxC = Math.max(1, ...rows.map((r) => r.count));
+    rows.forEach((r) => { r.wpct = Math.round(r.count / maxC * 100); });
+    const pref = String(d.districts || '').split(/[,，、\s]+/).filter(Boolean);
+    let matchCount = 0;
+    props.forEach((p) => {
+      const dist = (p.location && p.location.district) || '';
+      if (dist && pref.some((x) => dist.indexOf(x) > -1)) matchCount++;
+    });
+    return { rows, prefText: pref.join('/') || '未设置', matchCount };
+  }
+  function anaRenovation(props) {
+    const items = [];
+    props.filter(isPurchased).forEach((p) => {
+      const a = atOf(p);
+      const renos = Array.isArray(a.renovations) ? a.renovations : [];
+      const budget = num(a.renovationCost);
+      const title = p.title || (p.location && p.location.community) || '已购房源';
+      if (renos.length) {
+        renos.forEach((r) => {
+          const phases = Array.isArray(r.progress) ? r.progress : [];
+          const done = phases.filter((x) => x.status === '已完成').length;
+          const pct = phases.length ? Math.round(done / phases.length * 100) : 0;
+          const actual = phases.reduce((s, x) => s + (num(x.cost) || 0), 0);
+          items.push({ title: renos.length > 1 ? title + ' · ' + (r.name || '方案') : title, phases, pct, budget, actual, over: budget > 0 && actual > budget });
+        });
+      } else if (budget > 0) {
+        items.push({ title, phases: [], pct: 0, budget, actual: 0, over: false });
+      }
+    });
+    return { items };
+  }
+
+
+  // ---------- 购房计划（里程碑 + 自定义任务） ----------
+  // 第 28 轮（④A 已拍板）：把原「购房资格与预算核对」拆成 3 个购房前准备节点，共 12 个
+  const MILESTONE_TPL = [
+    '购房需求清单', '资格与征信自查', '资金预算与首付准备',
+    '贷款预审与征信自查', '看房筛选与复看', '议价与支付定金',
+    '网签与合同签署', '首付资金到账', '面签与贷款审批', '缴税与过户', '交房验收', '装修与入住'
+  ];
+  const DOC_TASK_TPL = ['身份证 / 户口本', '购房资格证明', '征信报告', '银行流水',
+    '收入证明', '定金与首付凭证', '网签合同', '不动产权证'];
+  const PLAN_STATUS = ['未开始', '进行中', '已完成'];
+  function planToday() {
+    const t = new Date();
+    return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+  }
+  function planData() {
+    const s = demandNow().plan || {};
+    const ms = Array.isArray(s.milestones) ? s.milestones.map((x) => Object.assign({}, x)) : null;
+    const ts = Array.isArray(s.tasks) ? s.tasks.map((x) => Object.assign({}, x)) : [];
+    return {
+      milestones: ms && ms.length ? ms : MILESTONE_TPL.map((t) => ({
+        id: dashUID(), title: t, status: '未开始', planDate: '', doneDate: '', amount: '', note: '', propId: ''
+      })),
+      tasks: ts
+    };
+  }
+
+  async function renderPlan(c) {
+    if (!(state.properties && state.properties.length)) {
+      try { state.properties = await Store.list(); } catch (e) { state.properties = []; }
+    }
+    const props = state.properties || [];
+    const data = planData();
+    const today = planToday();
+    const propOpts = (cur) => '<option value="">不关联房源</option>' + props.map((p) =>
+      `<option value="${esc(p.id)}" ${String(p.id) === String(cur || '') ? 'selected' : ''}>${esc(p.title || (p.location || {}).community || '房源')}</option>`).join('');
+    const statusOpts = (cur) => PLAN_STATUS.map((s) =>
+      `<option value="${s}" ${s === (cur || '未开始') ? 'selected' : ''}>${s}</option>`).join('');
+    // ⑤A：任务可关联里程碑；下拉只列当前节点，老任务没有该字段时默认「不关联」
+    const msOpts = (cur) => '<option value="">不关联里程碑</option>' + data.milestones.map((m, i) =>
+      `<option value="${esc(m.id)}" ${String(m.id) === String(cur || '') ? 'selected' : ''}>${i + 1}. ${esc(m.title || '未命名节点')}</option>`).join('');
+    const linkedTasks = (mid) => data.tasks.filter((t) => String(t.milestoneId || '') === String(mid));
+
+    c.innerHTML = `
+      <div class="plan-wrap">
+        <div class="section-head"><h2>购房计划</h2><div class="spacer"></div><span class="dash-save" id="plan-save-state">✅ 数据随账号保存</span></div>
+        <div id="plan-top"></div>
+        <div class="card-block" id="plan-dash-card">
+          <h3>购房设定<small>房屋总价 / 首付 / 贷款 / 进度与收入 / 一次性费用比例；保存后看房驾驶同步更新</small></h3>
+          <div id="plan-dash-form-body"></div>
+          <div class="dash-tip">金额口径：总价 / 首付 / 贷款 / 目标 / 已存用「万」，月供 / 工资 / 费用用「元」。数据保存在账号下，换设备也在。<span class="dash-save" id="plan-dash-save-state">✅ 数据随账号保存</span></div>
+        </div>
+        <div class="card-block">
+          <h3>购房里程碑<small>默认 12 个节点（含购房前准备），可增删改名、调整顺序、关联房源</small></h3>
+          <div class="plan-legend"><span>序号</span><span>节点名称 / 状态 / 计划日期 / 完成日期</span><span>金额 · 关联房源 · 备注 · 任务进度</span></div>
+          <div id="plan-milestones"></div>
+          <div class="plan-actions">
+            <button class="btn sm primary" id="plan-add-m" type="button">＋ 新增节点</button>
+            <button class="btn sm" id="plan-tpl" type="button">补齐默认节点</button>
+            <button class="btn sm" id="plan-go-dash" type="button">去看房驾驶 →</button>
+          </div>
+        </div>
+        <div class="card-block">
+          <h3>自定义任务<small>资料清单等零散待办，可关联到里程碑</small></h3>
+          <div class="plan-legend"><span>序号</span><span>任务名称 / 状态 / 截止日</span><span>关联里程碑 · 关联房源 · 备注</span></div>
+          <div id="plan-tasks"></div>
+          <div class="plan-actions">
+            <button class="btn sm primary" id="plan-add-t" type="button">＋ 新增任务</button>
+            <button class="btn sm" id="plan-docs" type="button">📎 一键生成资料清单</button>
+          </div>
+        </div>
+        <div class="dash-tip">编辑后自动保存到账号（users.demand.plan），无需点保存；两台设备同时编辑时以最后一次保存为准。</div>
+      </div>`;
+
+    const statusEl = $('plan-save-state');
+    const queueSave = makeAutoSave('plan', () => data, statusEl);
+    const msEl = $('plan-milestones'), tsEl = $('plan-tasks');
+
+    function rowHTML(kind, it, i) {
+      const dueField = kind === 'm' ? it.planDate : it.due;
+      const overdue = it.status !== '已完成' && dashDate(dueField) && dueField < today;
+      const ops = `<div class="plan-ops">
+        <button class="plan-ico" data-act="up" title="上移" type="button">↑</button>
+        <button class="plan-ico" data-act="down" title="下移" type="button">↓</button>
+        ${it.propId ? `<button class="plan-ico" data-act="open" title="查看关联房源" type="button">↗</button>` : ''}
+        <button class="plan-ico del" data-act="del" title="删除" type="button">✕</button>
+      </div>`;
+      if (kind === 't') {
+        return `<div class="plan-row t ${overdue ? 'overdue' : ''}" data-kind="t" data-id="${esc(it.id)}">
+          <span class="plan-idx">${i + 1}</span>
+          <div class="plan-main">
+            <input data-field="title" value="${esc(it.title)}" placeholder="任务名称"/>
+            <select data-field="status">${statusOpts(it.status)}</select>
+            <input type="date" data-field="due" value="${esc(dashDate(it.due))}"/>
+          </div>
+          <div class="plan-sub">
+            <select data-field="milestoneId" title="关联里程碑">${msOpts(it.milestoneId)}</select>
+            <select data-field="propId">${propOpts(it.propId)}</select>
+            <input data-field="note" value="${esc(it.note)}" placeholder="备注"/>
+          </div>${ops}</div>`;
+      }
+      // ⑤A：里程碑只展示关联任务完成率；全部完成也只提示，不自动改状态
+      const lk = linkedTasks(it.id);
+      const lkDone = lk.filter((t) => t.status === '已完成').length;
+      const lkPct = lk.length ? Math.round(lkDone / lk.length * 100) : 0;
+      const canConfirm = lk.length > 0 && lkDone === lk.length && it.status !== '已完成';
+      return `<div class="plan-row m ${overdue ? 'overdue' : ''}" data-kind="m" data-id="${esc(it.id)}">
+        <span class="plan-idx">${i + 1}</span>
+        <div class="plan-main">
+          <input data-field="title" value="${esc(it.title)}" placeholder="节点名称"/>
+          <select data-field="status">${statusOpts(it.status)}</select>
+          <input type="date" data-field="planDate" value="${esc(dashDate(it.planDate))}" title="计划日期"/>
+          <input type="date" data-field="doneDate" value="${esc(dashDate(it.doneDate))}" title="完成日期"/>
+        </div>
+        <div class="plan-sub">
+          <input data-field="amount" value="${esc(it.amount)}" placeholder="金额(万)"/>
+          <select data-field="propId">${propOpts(it.propId)}</select>
+          <input data-field="note" value="${esc(it.note)}" placeholder="备注"/>
+        </div>
+        <div class="plan-m-progress">
+          <span>关联任务</span>
+          <div class="dash-bar"><i style="width:${lkPct}%"></i></div>
+          <b>${lkDone} / ${lk.length} 已完成</b>
+          ${lk.length === 0 ? '<em class="muted">暂无关联任务</em>'
+            : canConfirm ? '<em class="plan-can-confirm">✓ 任务已全完成，可把上方状态改为「已完成」</em>' : ''}
+        </div>${ops}</div>`;
+    }
+    function paintMilestones() {
+      msEl.innerHTML = data.milestones.length
+        ? data.milestones.map((it, i) => rowHTML('m', it, i)).join('')
+        : '<div class="muted" style="padding:10px">还没有节点，点「新增节点」或「补齐默认节点」。</div>';
+    }
+    function paintTasks() {
+      tsEl.innerHTML = data.tasks.length
+        ? data.tasks.map((it, i) => rowHTML('t', it, i)).join('')
+        : '<div class="muted" style="padding:10px">还没有自定义任务，可用「一键生成资料清单」快速添加。</div>';
+    }
+    function paintLists() { paintMilestones(); paintTasks(); }
+    function paintTop() {
+      const total = data.milestones.length;
+      const done = data.milestones.filter((x) => x.status === '已完成').length;
+      const pct = total ? Math.round(done / total * 100) : 0;
+      const next = data.milestones.find((x) => x.status !== '已完成');
+      const openTasks = data.tasks.filter((x) => x.status !== '已完成').length;
+      const overdue = data.milestones.filter((x) => x.status !== '已完成' && dashDate(x.planDate) && x.planDate < today).length
+        + data.tasks.filter((x) => x.status !== '已完成' && dashDate(x.due) && x.due < today).length;
+      const dd = demandNow();
+      let deadline = '<div class="muted">未设置最晚购房时间，可在「设置 → 购房需求」里开启。</div>';
+      if (dd.deadlineEnabled && dashDate(dd.deadlineDate)) {
+        const days = Math.ceil((new Date(dd.deadlineDate + 'T00:00:00') - new Date()) / 86400000);
+        deadline = `<div class="plan-deadline ${days < 0 ? 'over' : ''}">⏰ ${days < 0 ? '已超期 ' + Math.abs(days) + ' 天' : '距最晚购房时间 ' + days + ' 天'}（${esc(dd.deadlineDate)}）</div>`;
+      }
+      // 第三栏：用已有数据填满顶部卡片右侧空白（不新增业务字段）
+      const statusRows = PLAN_STATUS.map((s) => {
+        const n = data.milestones.filter((x) => (x.status || '未开始') === s).length;
+        const p = total ? Math.round(n / total * 100) : 0;
+        const col = s === '已完成' ? 'var(--success)' : s === '进行中' ? 'var(--primary)' : 'var(--line-strong)';
+        return `<div class="plan-stat-row"><span>${esc(s)}</span><div class="dash-bar"><i style="width:${p}%;background:${col}"></i></div><b>${n}</b></div>`;
+      }).join('');
+      const amountSum = data.milestones.reduce((a, x) => a + (num(x.amount) || 0), 0);
+      const taskTotal = data.tasks.length;
+      const taskDone = taskTotal - openTasks;
+      const nearest = data.milestones.filter((x) => x.status !== '已完成' && dashDate(x.planDate))
+        .sort((a, b) => a.planDate.localeCompare(b.planDate))[0];
+      $('plan-top').innerHTML = `<div class="card-block plan-top-card">
+        ${dashRing(pct, '计划完成度',
+          `<b>${done} / ${total} 个节点已完成</b><div class="dash-eta">自定义任务待办 ${openTasks} 项 · 逾期 ${overdue} 项</div>`, 'var(--primary)')}
+        <div class="plan-next-box">
+          <div class="plan-next-label">下一步该做</div>
+          ${next ? `<b>${esc(next.title)}</b><div class="muted">计划日期：${esc(next.planDate || '未设置')}</div>
+            <button class="btn sm" id="plan-next-done" type="button">✓ 标记完成</button>`
+            : '<b>全部节点已完成 🎉</b><div class="muted">可以新增节点继续跟踪装修与入住。</div>'}
+          ${deadline}
+        </div>
+        <div class="plan-stat-box">
+          <div class="plan-next-label">节点状态分布</div>
+          <div class="plan-stat-bars">${statusRows}</div>
+          <div class="plan-stat-grid">
+            <div><span>计划金额合计</span><b>${amountSum ? dashWan(amountSum) : '—'}</b></div>
+            <div><span>自定义任务</span><b>${taskDone} / ${taskTotal} 已完成</b></div>
+            <div><span>逾期项</span><b class="${overdue ? 'is-over' : ''}">${overdue} 项</b></div>
+            <div><span>下一个计划日</span><b>${esc(nearest ? nearest.planDate : '未设置')}</b></div>
+          </div>
+        </div>
+      </div>`;
+      const btn = $('plan-next-done');
+      if (btn) btn.onclick = () => {
+        if (!next) return;
+        next.status = '已完成'; next.doneDate = today;
+        paintLists(); paintTop(); queueSave();
+      };
+    }
+    function onEdit(e) {
+      const el = e.target.closest('[data-field]');
+      if (!el) return;
+      const row = el.closest('[data-id]');
+      if (!row) return;
+      const arr = row.dataset.kind === 'm' ? data.milestones : data.tasks;
+      const it = arr.find((x) => String(x.id) === String(row.dataset.id));
+      if (!it) return;
+      it[el.dataset.field] = el.value;
+      // 改成「已完成」且没填完成日期时自动补今天
+      if (row.dataset.kind === 'm' && el.dataset.field === 'status' && el.value === '已完成' && !it.doneDate) {
+        it.doneDate = today;
+        const de = row.querySelector('[data-field="doneDate"]');
+        if (de) de.value = today;
+      }
+      // 任务改状态 / 改关联里程碑时只重绘里程碑行，避免任务行输入框失焦
+      if (row.dataset.kind === 't' && (el.dataset.field === 'status' || el.dataset.field === 'milestoneId')) {
+        paintMilestones();
+      } else if (el.dataset.field === 'status' || el.dataset.field === 'planDate' || el.dataset.field === 'due') {
+        paintLists();
+      }
+      paintTop(); queueSave();
+    }
+    function onAct(e) {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const row = btn.closest('[data-id]');
+      if (!row) return;
+      const arr = row.dataset.kind === 'm' ? data.milestones : data.tasks;
+      const i = arr.findIndex((x) => String(x.id) === String(row.dataset.id));
+      if (i < 0) return;
+      const act = btn.dataset.act;
+      if (act === 'open') {
+        const pid = arr[i].propId;
+        if (pid) renderDetail(c, pid);
+        return;
+      }
+      if (act === 'del') {
+        // 删除里程碑时清掉任务上的悬空关联，避免进度统计找不到归属
+        if (row.dataset.kind === 'm') {
+          const gone = String(arr[i].id);
+          data.tasks.forEach((t) => { if (String(t.milestoneId || '') === gone) t.milestoneId = ''; });
+        }
+        arr.splice(i, 1);
+      }
+      if (act === 'up' && i > 0) { const t = arr[i - 1]; arr[i - 1] = arr[i]; arr[i] = t; }
+      if (act === 'down' && i < arr.length - 1) { const t = arr[i + 1]; arr[i + 1] = arr[i]; arr[i] = t; }
+      paintLists(); paintTop(); queueSave();
+    }
+    [msEl, tsEl].forEach((el) => {
+      el.addEventListener('input', onEdit);
+      el.addEventListener('change', onEdit);
+      el.addEventListener('click', onAct);
+    });
+    $('plan-add-m').onclick = () => {
+      data.milestones.push({ id: dashUID(), title: '', status: '未开始', planDate: '', doneDate: '', amount: '', note: '', propId: '' });
+      paintLists(); paintTop(); queueSave();
+    };
+    $('plan-add-t').onclick = () => {
+      data.tasks.push({ id: dashUID(), title: '', status: '未开始', due: '', note: '', propId: '', milestoneId: '' });
+      paintLists(); paintTop(); queueSave();
+    };
+    $('plan-tpl').onclick = () => {
+      const have = new Set(data.milestones.map((x) => x.title));
+      MILESTONE_TPL.forEach((t) => {
+        if (!have.has(t)) data.milestones.push({ id: dashUID(), title: t, status: '未开始', planDate: '', doneDate: '', amount: '', note: '', propId: '' });
+      });
+      paintLists(); paintTop(); queueSave();
+      toast('已补齐默认节点（不会改动已有节点）', true);
+    };
+    $('plan-docs').onclick = () => {
+      const have = new Set(data.tasks.map((x) => x.title));
+      DOC_TASK_TPL.forEach((t) => {
+        if (!have.has(t)) data.tasks.push({ id: dashUID(), title: t, status: '未开始', due: '', note: '资料清单', propId: '', milestoneId: '' });
+      });
+      paintLists(); paintTop(); queueSave();
+      toast('资料清单已加入自定义任务（重复项不会再加）', true);
+    };
+    $('plan-go-dash').onclick = () => setView('dashboard');
+    // 购房设定可编辑表单（与首页只读视图共用 dashFormHTML / wireDashForm，勿写两套）
+    const dashD = dashData();
+    const formBody = $('plan-dash-form-body');
+    formBody.innerHTML = dashFormHTML(dashD, props);
+    const dashSave = makeAutoSave('dashboard', () => dashD, $('plan-dash-save-state'));
+    const wf = wireDashForm(formBody, dashD, () => dashSave());
+    $('dash-from-budget').onclick = () => {
+      const b = num(demandNow().budgetMax);
+      if (b == null) { toast('请先到「设置 → 购房需求」填写预算上限', true); return; }
+      wf.setFieldSilent('totalPrice', String(b));
+      if (!dashD.savingTargetTouched) wf.setFieldSilent('savingTarget', String(b));
+      if (!dashD.downTargetTouched) wf.setFieldSilent('downTarget', dashD.downPayment);
+      dashSave();
+      toast('已从购房需求预算带入总价', true);
+    };
+    $('dash-from-purchased').onclick = () => {
+      const p = props.find((x) => x.id === $('dash-pick-purchased').value);
+      if (!p) { toast('请先选择一套已购房源', true); return; }
+      const t = txOf(p);
+      const price = t.purchasePrice != null ? t.purchasePrice : t.totalPrice;
+      const fields = { totalPrice: price, loanType: t.loanType || dashD.loanType, years: t.loanYears || dashD.years, commRate: t.commRate, fundRate: t.fundRate, fundAmt: t.fundAmount, monthlyOverride: t.monthlyPayment };
+      Object.keys(fields).forEach((k) => { if (fields[k] != null && fields[k] !== '') wf.setFieldSilent(k, String(fields[k])); });
+      if (t.repayment) { dashD.method = t.repayment; const mEl = formBody.querySelector('[data-dash="method"]'); if (mEl) mEl.value = t.repayment; }
+      const ratio = num(t.downPaymentRatio);
+      if (ratio != null && num(price)) wf.setFieldSilent('downPayment', (num(price) * ratio).toFixed(2));
+      if (!dashD.downTargetTouched) wf.setFieldSilent('downTarget', dashD.downPayment);
+      if (!dashD.savingTargetTouched) wf.setFieldSilent('savingTarget', dashD.totalPrice);
+      dashSave();
+      toast('已带入该房源的购房信息', true);
+    };
+    $('dash-go-mortgage').onclick = () => setView('mortgage');
+    paintLists(); paintTop();
+    // 首次进入时把默认 12 个节点（含生成的 id）落到账号，避免每次刷新都换 id
+    if (!demandNow().plan) queueSave();
   }
 
   // ---------- 房贷计算（参考贝壳/链家/银行实现）----------
@@ -4629,6 +6996,9 @@
   }
 
   async function boot() {
+    // 字段清单先就位，之后绑定导入/导出按钮时才不会拿到空表头
+    try { await loadPropertySchema(); }
+    catch (e) { console.error('[SCHEMA]', e.message); toast('字段清单加载失败，CSV 导入导出暂不可用：' + e.message); }
     Auth.init();
     loadSavedView(); // 恢复上次停留的菜单，刷新浏览器不回到房源列表
     // 点击任意菜单（含当前菜单）：重置筛选与页面内容
@@ -4640,6 +7010,7 @@
       if (sb) sb.classList.toggle('collapsed', collapsed);
       if (sbt) sbt.textContent = collapsed ? '›' : '‹';
       try { localStorage.setItem('hvt_sidebar_collapsed', collapsed ? '1' : '0'); } catch (e) {}
+      requestAnimationFrame(recalcDetailMediaCap); // 内容宽度变了，左列高度与右列上限要重算
     }
     if (sbt) {
       if (localStorage.getItem('hvt_sidebar_collapsed') === '1') applySidebar(true);
@@ -4665,6 +7036,13 @@
     document.addEventListener('click', (e) => {
       const menu = document.getElementById('add-menu');
       if (menu && !e.target.closest('.dd')) menu.classList.add('hidden');
+    });
+    wireMediaViewer();   // 详情页媒体查看器：全局只注册一次（内部用事件委托）
+    // 窗口宽度变化会改变左列换行与高度，右列媒体上限跟着重算（防抖）
+    let detailCapTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(detailCapTimer);
+      detailCapTimer = setTimeout(recalcDetailMediaCap, 120);
     });
     // 放大地图弹窗：拖动右下角调整大小（全局只注册一次）
     document.addEventListener('mousemove', (e) => {
@@ -4704,6 +7082,11 @@
     Auth.onAuthStateChange((_event, session) => {
       if (session) { state.user = session.user; applyAmapKey(); syncMapMenu(); loadCompareSel(); showApp(); idleKick(); }
       else { state.user = null; applyAmapKey(); syncMapMenu(); showAuth(); idleStop(); }
+    });
+    // API 返回 401 且已清本地会话时，兜底回到登录页（覆盖「页面一直开着、令牌 2 小时后过期」）
+    window.addEventListener('hvt:unauthorized', () => {
+      authNotice = '⏰ 登录已过期，请重新登录';
+      state.user = null; applyAmapKey(); syncMapMenu(); showAuth(); idleStop();
     });
     initIdleGuard();
     if (s.session) idleKick(); // 刷新页面时本地会话仍在，也要开始计时

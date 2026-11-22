@@ -10,12 +10,15 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const dns = require('dns');
 const net = require('net');
 const tls = require('tls');
 const { Pool } = require('pg');
 const dbConfig = require('./config/db');
+// 每账号多模型清单：脱敏 / 合并 / 校验 / 选当前（唯一实现，纯函数）
+const aiProviders = require('./ai-providers');
 
 // [诊断] 全局崩溃兜底：任意未捕获异常/拒绝都先打印，避免进程直接退出导致所有连接被重置（ERR_CONNECTION_RESET）
 process.on('uncaughtException', (e) => { console.error('[FATAL uncaughtException]', e && e.stack || e); });
@@ -24,7 +27,13 @@ process.on('unhandledRejection', (e) => { console.error('[FATAL unhandledRejecti
 const PORT = process.env.PORT || 8787;
 const ROOT = path.join(__dirname, 'public');
 
-const pool = new Pool(dbConfig);
+// 数据库可切换：默认仍是原来的 PostgreSQL（本地开发 / 已有数据库服务）；
+// HVT_DB=embedded 时改用内嵌 PostgreSQL（PGlite/WASM），服务器上无需安装任何数据库。
+// 两者的 query(sql, params) → { rows, rowCount } 语义一致，业务 SQL 零改动。
+const EMBEDDED_DB = process.env.HVT_DB === 'embedded';
+const pool = EMBEDDED_DB
+  ? require('./config/db-embedded')
+  : new Pool(dbConfig);
 
 // ---------- 安全响应头 ----------
 // 统一在 API / 静态资源 / 上传响应上附加；媒体文件再叠加更严格的独立 CSP。
@@ -37,7 +46,8 @@ const SECURITY_HEADERS = {
   // 'unsafe-eval' 是高德 JS API 2.0 的硬性要求：它内部用 eval / new Function 动态注册
   // WebGLRender 等模块，缺了会抛 EvalError 并导致 "U.Module.WebGLRender is not a constructor"、
   // 地图彻底无法渲染。这是已知权衡，补偿措施：脚本来源仍严格限定 self + 高德官方域，
-  // connect-src / object-src / frame-src / base-uri 保持收紧，用户可控文本一律 escHtml 转义。
+  // frame-src 仅放行同源（装修设计页用同源 iframe 承载 3D 户型编辑器），不放开外部站点；
+  // object-src / base-uri 保持收紧，用户可控文本一律 escHtml 转义。
   'Content-Security-Policy':
     "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://webapi.amap.com https://*.amap.com https://*.autonavi.com; " +
@@ -46,7 +56,7 @@ const SECURITY_HEADERS = {
     "img-src 'self' data: blob: https: http:; media-src 'self' https:; font-src 'self' data: https:; " +
     "connect-src 'self' https://webapi.amap.com https://restapi.amap.com https://*.amap.com https://*.autonavi.com; " +
     "worker-src 'self' blob:; " +
-    "frame-src 'none'; object-src 'none'; base-uri 'self'"
+    "frame-src 'self'; object-src 'none'; base-uri 'self'"
 };
 function head(res, code, extra, isMedia) {
   const h = Object.assign({}, SECURITY_HEADERS, extra || {});
@@ -76,14 +86,80 @@ function loginFail(ip) {
   e.count++; e.first = e.first || Date.now();
   loginFails.set(ip, e);
 }
-function loginFailCount(ip) {
-  const e = loginFails.get(ip);
-  if (!e || Date.now() - e.first > LOGIN_WINDOW) return 0;
-  return e.count;
-}
 function loginOk(ip) { loginFails.delete(ip); }
-// 密码登录默认不打扰用户；同一 IP 连续失败达到该次数后才要求图形验证（渐进式防刷）
-const CAPTCHA_AFTER_FAILS = 2;
+
+// ---------- 运行监控：登录日志 / 模型流量 ----------
+// 铁律：日志一律异步 best-effort，写失败/库短暂不可用绝不影响登录与 AI 调用。
+// 管理员只认 .env 里显式列出的 ADMIN_EMAILS（逗号分隔），不猜「第一个注册的用户」，
+// 避免测试账号意外拿到全局可见权限。日志不记密码、验证码、令牌、提问正文、图片。
+const ADMIN_EMAILS = new Set(
+  String(process.env.ADMIN_EMAILS || '').split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean)
+);
+const MONITOR_RETENTION_DAYS = 90;
+function monText(v, n) { return String(v == null ? '' : v).slice(0, n); }
+function monInt(v) { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0; }
+function monHost(base) {
+  try { return monText(new URL(base).hostname, 120) || monText(base, 120); }
+  catch (_) { return monText(base, 120); }
+}
+async function isAdmin(uid) {
+  if (!uid || !ADMIN_EMAILS.size) return false;
+  try {
+    const r = await pool.query('SELECT email FROM users WHERE id=$1', [uid]);
+    return !!(r.rows[0] && ADMIN_EMAILS.has(String(r.rows[0].email).toLowerCase()));
+  } catch (_) { return false; }
+}
+function logWrite(sql, args, tag) {
+  try { pool.query(sql, args).catch(e => console.warn('[monitor] ' + tag + ' 写入失败：', e.message)); }
+  catch (e) { console.warn('[monitor] ' + tag + ' 异常：', e.message); }
+}
+function writeAuthLog(req, o) {
+  logWrite(
+    'INSERT INTO auth_logs (owner_id,email,action,ok,reason,ip,ua) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [o.uid || null, monText(o.email, 200) || null, monText(o.action, 32), !!o.ok,
+      o.reason ? monText(o.reason, 160) : null, monText(clientIp(req), 64),
+      monText(req && req.headers && req.headers['user-agent'], 200)],
+    '登录日志'
+  );
+}
+// 上游 usage 字段名各家不一（OpenAI / Anthropic / 国产网关），统一成三个数字
+function usageOf(j) {
+  const u = j && j.usage;
+  if (!u || typeof u !== 'object') return null;
+  const p = monInt(u.prompt_tokens != null ? u.prompt_tokens : u.input_tokens);
+  const c = monInt(u.completion_tokens != null ? u.completion_tokens : u.output_tokens);
+  const t = monInt(u.total_tokens != null ? u.total_tokens : (p + c));
+  if (!p && !c && !t) return null;
+  return { prompt_tokens: p, completion_tokens: c, total_tokens: t || (p + c) };
+}
+// 上游没回 usage 时按字符粗估输入 token，并打 estimated 标记，绝不冒充精确值
+function estimatePromptTokens(messages) {
+  let chars = 0;
+  for (const m of (messages || [])) {
+    const c = m && m.content;
+    chars += typeof c === 'string' ? c.length : (c ? JSON.stringify(c).length : 0);
+  }
+  return Math.max(1, Math.round(chars / 2.2));
+}
+function writeAiLog(seed, extra) {
+  const u = extra && extra.usage;
+  const est = !u && !!(extra && extra.promptEstimate);
+  const p = u ? u.prompt_tokens : ((extra && extra.promptEstimate) || 0);
+  const c = u ? u.completion_tokens : 0;
+  const t = u ? u.total_tokens : p;
+  logWrite(
+    `INSERT INTO ai_usage_logs
+       (owner_id,entry,channel,provider,model,stream,prompt_tokens,completion_tokens,total_tokens,estimated,latency_ms,ok,status_code,error)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [seed.owner_id || null, monText(seed.entry, 32), monText(seed.channel, 16),
+      monText(seed.provider, 120), monText(seed.model, 120), !!seed.stream,
+      monInt(p), monInt(c), monInt(t), est, monInt(extra && extra.latencyMs),
+      !!(extra && extra.ok), (extra && extra.statusCode) || null,
+      (extra && extra.error) ? monText(extra.error, 300) : null],
+    '模型流量'
+  );
+}
+// 图形验证码由 /api/auth/captcha 签发、一次性校验；密码登录每次都要过，不再按失败次数渐进触发。
 
 // ---------- 登录 / 注册验证码：表单内联「点选数字」（图形算式 + 服务端一次性校验）----------
 // 选型说明：纯 Node 内置模块即可实现，不需要 canvas / 图片库 / 第三方服务；
@@ -252,6 +328,30 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS amap_web_key text;`);
   // 地图功能开关：默认关闭，用户在「设置 → 高德地图 Key」点「启用」后才加载高德脚本、才显示地图分布菜单
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS map_enabled boolean NOT NULL DEFAULT false;`);
+  // AI 直连通道（旧版单模型）：四个列保留不动，随时可一键回退。
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_direct_enabled boolean NOT NULL DEFAULT false;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_direct_base_url text;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_direct_api_key text;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_direct_model text;`);
+  // 多模型清单：一张服务商卡共享地址 + Key，下面挂多个具体模型（含类型标注）。
+  // ai_active_provider 存 '服务商ID::模型ID'；旧值只有服务商ID时由 pickActive() 取第一行，
+  // 因此无需数据库迁移。密钥只存服务端（jsonb 内），userPublic() 只下发 keySet 布尔。
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_providers jsonb NOT NULL DEFAULT '[]'::jsonb;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_active_provider text NOT NULL DEFAULT '';`);
+  // 一次性迁移：把旧的单模型配置转成清单里的一条，避免升级后用户原来的配置消失。
+  // 旧四列不清空，回退时仍可读。
+  await pool.query(`
+    UPDATE users
+       SET ai_providers = jsonb_build_array(jsonb_build_object(
+             'id', 'legacy', 'preset', 'custom', 'name', '原有自定义模型',
+             'baseUrl', ai_direct_base_url,
+             'model', ai_direct_model,
+             'apiKey', COALESCE(ai_direct_api_key, '')
+           )),
+           ai_active_provider = 'legacy'
+     WHERE ai_providers = '[]'::jsonb
+       AND ai_direct_base_url IS NOT NULL AND btrim(ai_direct_base_url) <> ''
+  `);
   // 收藏标记（软删除之外的正向标记，跟账号走）
   await pool.query(`ALTER TABLE properties ADD COLUMN IF NOT EXISTS favorite boolean NOT NULL DEFAULT false;`);
   // 邮箱验证码（注册 / 登录 / 找回密码）。服务于未登录的公开流程，故不带 owner_id；
@@ -309,6 +409,52 @@ async function ensureSchema() {
     CREATE TRIGGER properties_set_updated_at BEFORE UPDATE ON properties
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
   `);
+  // ---------- 运行监控：登录日志 + 模型流量 ----------
+  // owner_id 可空：登录失败时可能还没有对应的用户（例如邮箱不存在、验证码错误）。
+  // 查询时普通用户按 owner_id 过滤，再补上「同邮箱且 owner_id 为空」的失败记录。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS auth_logs (
+      id bigserial PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      owner_id uuid REFERENCES users(id) ON DELETE SET NULL,
+      email text,
+      action text NOT NULL,
+      ok boolean NOT NULL,
+      reason text,
+      ip text,
+      ua text
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS auth_logs_created_idx ON auth_logs(created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS auth_logs_owner_idx ON auth_logs(owner_id, created_at DESC);`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_usage_logs (
+      id bigserial PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      owner_id uuid REFERENCES users(id) ON DELETE SET NULL,
+      entry text NOT NULL,
+      channel text,
+      provider text,
+      model text,
+      stream boolean NOT NULL DEFAULT false,
+      prompt_tokens integer NOT NULL DEFAULT 0,
+      completion_tokens integer NOT NULL DEFAULT 0,
+      total_tokens integer NOT NULL DEFAULT 0,
+      estimated boolean NOT NULL DEFAULT false,
+      latency_ms integer,
+      ok boolean NOT NULL,
+      status_code integer,
+      error text
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_created_idx ON ai_usage_logs(created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ai_usage_owner_idx ON ai_usage_logs(owner_id, created_at DESC);`);
+  // 保留 90 天：只在启动时清一次，不在长驻进程里挂定时器（少一个出错点）
+  const monClean = (t) => pool.query(
+    `DELETE FROM ${t} WHERE created_at < now() - ($1::int * interval '1 day')`, [MONITOR_RETENTION_DAYS]
+  ).catch(e => console.warn('[monitor] 清理 ' + t + ' 失败：', e.message));
+  await monClean('auth_logs');
+  await monClean('ai_usage_logs');
 }
 
 // ---------- 密码哈希（内置 scrypt，无需第三方库）----------
@@ -375,6 +521,10 @@ const smtpConfig = dbConfig.smtp;
 // 仅本地开发可显式开启：不连 SMTP，把验证码打印到服务端控制台，便于跑通全流程。
 // 生产严禁开启；未配置 SMTP 且未开此开关时，所有需要邮件验证的操作明确报错、不静默放行。
 const EMAIL_DEV_LOG = dbConfig.emailDevLog;
+// 邮箱验证码总开关（.env 的 EMAIL_VERIFICATION，默认 false）。
+// false：注册只过图形验证码；邮件相关的「验证码登录/找回密码」在前后端都禁用。
+// true ：完整邮件验证，必须配齐 SMTP（未配置时明确报错，不静默放行）。
+const EMAIL_VERIFICATION = dbConfig.emailVerification;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 function smtpConfigured() { return !!(smtpConfig.host && smtpConfig.user && smtpConfig.pass && smtpConfig.from); }
 function safeAddr(s) { return String(s || '').replace(/[\r\n<>]/g, '').trim(); }
@@ -556,7 +706,7 @@ function signToken(userId, tv) {
   const payload = Buffer.from(JSON.stringify({
     uid: userId,
     tv: tv || 0,
-    exp: Date.now() + 1000 * 60 * 60 * 24 * 30 // 30 天
+    exp: Date.now() + 1000 * 60 * 60 * 2 // 2 小时：几天不访问后令牌必然过期，需重新登录
   })).toString('base64url');
   const sig = crypto.createHmac('sha256', dbConfig.tokenSecret).update(payload).digest('base64url');
   return payload + '.' + sig;
@@ -578,6 +728,71 @@ function sendJSON(res, code, obj, extra) {
   head(res, code, Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, extra || {}));
   res.end(JSON.stringify(obj));
 }
+
+// ---------- 流式进度（SSE）----------
+// 识别一次可能几十秒到几分钟（思考型模型更慢），不能让用户只盯着转圈、也不知道走到哪一步。
+// 这里不设总时长上限——用户可能只配了一个慢模型，掐断就等于不可用；
+// 进度靠流实时回传，用户想不等了随时可以点「停止等待」。
+function openSSE(res) {
+  head(res, 200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  let closed = false;
+  res.on('close', () => { closed = true; });
+  return {
+    get closed() { return closed; },
+    send(type, data) {
+      if (closed) return;
+      try { res.write('data: ' + JSON.stringify(Object.assign({ type }, data || {})) + '\n\n'); }
+      catch (_) { closed = true; }
+    },
+    end() { if (!closed) { try { res.end(); } catch (_) {} } }
+  };
+}
+
+// 读上游 chat/completions 的流：边读边回调（进度就是这么来的），最后拼出完整内容。
+// 有的服务商会忽略 stream:true 直接回整段 JSON，这里按 content-type 分流兜底。
+async function pumpChatStream(resp, onDelta) {
+  const ct = String(resp.headers.get('content-type') || '');
+  if (!/text\/event-stream/i.test(ct)) {
+    const j = await resp.json().catch(() => null);
+    const ch = j && j.choices && j.choices[0];
+    const txt = (ch && ch.message && ch.message.content) || '';
+    if (txt && onDelta) onDelta(txt, 'content');
+    return { content: txt, reasoning: '', finish: (ch && ch.finish_reason) || null, usage: (j && j.usage) || null, json: j };
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder('utf-8');
+  let buf = '', content = '', reasoning = '', finish = null, usage = null;
+  const eat = (block) => {
+    for (const raw of block.split('\n')) {
+      const s = raw.trim();
+      if (!s || s[0] === ':' || !s.startsWith('data:')) continue;
+      const p = s.slice(5).trim();
+      if (!p || p === '[DONE]') continue;
+      let j; try { j = JSON.parse(p); } catch (_) { continue; }
+      if (j.usage) usage = j.usage;
+      const ch = j.choices && j.choices[0];
+      if (!ch) continue;
+      if (ch.finish_reason) finish = ch.finish_reason;
+      const d = ch.delta || ch.message || {};
+      if (d.reasoning_content) { reasoning += d.reasoning_content; if (onDelta) onDelta(d.reasoning_content, 'reasoning'); }
+      if (d.content) { content += d.content; if (onDelta) onDelta(d.content, 'content'); }
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) { eat(buf.slice(0, i)); buf = buf.slice(i + 2); }
+  }
+  if (buf.trim()) eat(buf);
+  return { content, reasoning, finish, usage };
+}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -589,6 +804,31 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+// 技能接口专用：允许更大的请求体，且超限时**正常回 413**而不是断开连接。
+// readBody 的上限是全局 1M 字符、超了直接 destroy（客户端看到 ECONNRESET），
+// 那是给普通接口防炸用的，这里不能改它（会影响所有接口），单独给一个。
+function readBodyLimit(req, softMax, hardMax) {
+  return new Promise((resolve, reject) => {
+    let data = '', size = 0, tooLarge = false;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > hardMax) { try { req.destroy(); } catch (_) {} return; }
+      if (size > softMax) { tooLarge = true; data = ''; return; } // 继续 drain，避免 RST
+      data += c;
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        const e = new Error('请求体过大（上限 ' + Math.round(softMax / 1048576) + 'MB）');
+        e.code = 'TOO_LARGE';
+        return reject(e);
+      }
+      if (!data) return resolve({});
+      try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('请求体不是合法 JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
 async function authUid(req) {
   const h = req.headers['authorization'] || '';
   const m = h.match(/^Bearer\s+(.+)$/i);
@@ -720,12 +960,13 @@ async function insertProperty(uid, s) {
 // ---------- freellmapi 调用封装（本地免费 LLM 网关；仅后端调用，token 不暴露前端） ----------
 // 把请求转发到 freellmapi 的 OpenAI 兼容端点；返回 fetch 的 Response，由调用方决定流式/非流式处理。
 async function callFreellm(opts) {
-  const { messages, model = 'auto', temperature = 0.7, maxTokens = 1024, stream = false, images = null } = opts || {};
+  const { messages, model = 'auto', temperature = 0.7, maxTokens = 1024, stream = false, images = null, endpoint = null, signal = null, meta = null } = opts || {};
   if (!Array.isArray(messages) || !messages.length) throw new Error('messages 不能为空');
-  const base = String(dbConfig.freellmBaseUrl || '').replace(/\/+$/, '');
-  const key = dbConfig.freellmApiKey;
-  if (!base) throw new Error('未配置 freellmapi 地址（FREELLM_BASE_URL）');
-  if (!key) throw new Error('未配置 freellmapi 统一令牌（FREELLM_API_KEY）');
+  // endpoint = 该用户在设置页自配的直连通道；没传就用系统级 freellmapi 网关（自动选模型）
+  const base = String((endpoint && endpoint.base) || dbConfig.freellmBaseUrl || '').replace(/\/+$/, '');
+  const key = (endpoint && endpoint.key) || dbConfig.freellmApiKey;
+  if (!base) throw new Error('未配置 AI 接口地址');
+  if (!key) throw new Error('未配置 AI 接口密钥');
   if (typeof fetch === 'undefined') throw new Error('当前 Node 版本过低，需 18+ 才能调用 LLM（请升级 Node）');
   // 多模态：若有图片，将第一条 user 消息的 content 转为 [text, image_url...] 数组格式
   let finalMessages = messages;
@@ -743,12 +984,107 @@ async function callFreellm(opts) {
       finalMessages = messages.map((m, i) => (i === firstUserIdx ? { role: 'user', content: visionContent } : m));
     }
   }
-  const resp = await fetch(base + '/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-    body: JSON.stringify({ model, messages: finalMessages, temperature, max_tokens: maxTokens, stream })
-  });
+  // ---------- 模型流量埋点 ----------
+  // meta 由调用方传入（uid + 业务入口）；只记元数据与 token 数，绝不记提问正文 / 图片 / Key。
+  const seed = {
+    owner_id: (meta && meta.uid) || null,
+    entry: (meta && meta.entry) || 'chat',
+    channel: (endpoint && endpoint.channel) || 'gateway',
+    provider: monHost(base),
+    model: String(model || ''),
+    stream: !!stream,
+    promptEstimate: estimatePromptTokens(finalMessages)
+  };
+  const t0 = Date.now();
+  const ms = () => Date.now() - t0;
+  let resp;
+  try {
+    resp = await fetch(base + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ model, messages: finalMessages, temperature, max_tokens: maxTokens, stream }),
+      signal: signal || undefined
+    });
+  } catch (e) {
+    writeAiLog(seed, { ok: false, latencyMs: ms(), error: e && e.message });
+    throw e;
+  }
+  if (!resp.ok) {
+    // 只读 clone，主响应体仍留给调用方处理
+    resp.clone().text()
+      .then(txt => writeAiLog(seed, { ok: false, statusCode: resp.status, latencyMs: ms(), error: (txt || '').slice(0, 300) || ('HTTP ' + resp.status) }))
+      .catch(() => writeAiLog(seed, { ok: false, statusCode: resp.status, latencyMs: ms() }));
+    return resp;
+  }
+  if (stream && resp.body && typeof resp.body.tee === 'function') {
+    // 流式：tee 一路只用来嗅探 usage，主路原样交给调用方转发，实时性不变
+    try {
+      const [main, probe] = resp.body.tee();
+      resp = new Response(main, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+      (async () => {
+        const reader = probe.getReader(), dec = new TextDecoder('utf-8');
+        let buf = '', last = null;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const block = buf.slice(0, i); buf = buf.slice(i + 2);
+            for (const raw of block.split('\n')) {
+              const s = raw.trim();
+              if (!s.startsWith('data:')) continue;
+              const p = s.slice(5).trim();
+              if (!p || p === '[DONE]') continue;
+              try { const j = JSON.parse(p); if (j.usage) last = usageOf(j); } catch (_) {}
+            }
+          }
+        }
+        writeAiLog(seed, { ok: true, statusCode: 200, usage: last, latencyMs: ms() });
+      })().catch(() => writeAiLog(seed, { ok: true, statusCode: 200, latencyMs: ms() }));
+    } catch (_) {
+      writeAiLog(seed, { ok: true, statusCode: resp.status, latencyMs: ms() });
+    }
+  } else {
+    resp.clone().json()
+      .then(j => writeAiLog(seed, { ok: true, statusCode: resp.status, usage: usageOf(j), latencyMs: ms() }))
+      .catch(() => writeAiLog(seed, { ok: true, statusCode: resp.status, latencyMs: ms() }));
+  }
   return resp;
+}
+
+// 每账号可在「模型清单」里配多个服务商、每个服务商下多个模型；
+// ai_active_provider（'服务商ID::模型ID'）指定当前生效的那一个具体模型。
+// 类型标注只用于展示/筛选，不参与这里的选路；三个 AI 接口拿到的仍是同一个 model 名。
+// 未启用走默认网关；启用却没选 / 没填齐一律明确报错，绝不静默回落网关。
+// 密钥只在这里从库里读出，绝不经过前端；出站地址再过一次 SSRF 校验。
+async function resolveAiEndpoint(uid, requestedModel) {
+  const fallback = {
+    base: String(dbConfig.freellmBaseUrl || '').replace(/\/+$/, ''),
+    key: dbConfig.freellmApiKey,
+    model: requestedModel || 'auto',
+    channel: 'gateway'
+  };
+  if (!uid) return fallback;
+  const r = await pool.query(
+    'SELECT ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE id=$1', [uid]
+  );
+  const u = r.rows[0];
+  if (!u) return fallback;
+  const picked = aiProviders.pickActive(u.ai_providers, u.ai_active_provider, !!u.ai_direct_enabled, u);
+  if (!picked.ok) {
+    throw new Error('AI 直连已启用但配置不完整：请在「设置 → AI 功能」补齐 ' +
+      picked.missing.join('、') + '，或关闭直连');
+  }
+  if (!picked.provider) return fallback;
+  const base = picked.provider.baseUrl.replace(/\/+$/, '');
+  try { await assertSafeUrl(base); }
+  catch (e) { throw new Error('AI 直连接口地址不安全：' + e.message); }
+  return {
+    base, key: picked.provider.apiKey,
+    model: (requestedModel && requestedModel !== 'auto') ? requestedModel : picked.provider.model,
+    channel: 'direct'
+  };
 }
 
 // ---------- AI 录入：结构化字段提取（best-effort，含链接抓取 + 平台识别） ----------
@@ -835,7 +1171,15 @@ function userPublic(r0) {
   return {
     id: r0.id, email: r0.email, name: r0.name, avatar: r0.avatar, demand: r0.demand || null,
     amapJsKey: r0.amap_js_key || '', amapSecurityCode: r0.amap_security_code || '',
-    mapEnabled: !!r0.map_enabled
+    mapEnabled: !!r0.map_enabled,
+    // AI 直连：密钥明文绝不下发，只告诉前端「有没有配」
+    aiDirectEnabled: !!r0.ai_direct_enabled,
+    aiDirectBaseUrl: r0.ai_direct_base_url || '',
+    aiDirectModel: r0.ai_direct_model || '',
+    aiDirectKeySet: !!(r0.ai_direct_api_key && String(r0.ai_direct_api_key).trim()),
+    // 多模型清单：只下发脱敏视图（keySet 布尔），apiKey 明文绝不下发
+    aiProviders: aiProviders.sanitizeProviders(r0.ai_providers),
+    aiActiveProvider: r0.ai_active_provider || ''
   };
 }
 
@@ -844,6 +1188,12 @@ async function handleApi(req, res, url) {
   const { pathname } = url;
   const method = req.method;
 
+  // 公开：登录页需要知道的非敏感开关（邮箱验证码是否启用）。只回布尔值，不下发任何密钥/SMTP 配置。
+  if (pathname === '/api/auth/config' && method === 'GET') {
+    return sendJSON(res, 200, { data: { emailVerification: EMAIL_VERIFICATION } },
+      { 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+  }
+
   // 公开：验证码挑战（不缓存，答案只留在服务端）
   if (pathname === '/api/auth/captcha' && method === 'GET') {
     return sendJSON(res, 200, { data: newCaptcha() }, { 'Cache-Control': 'no-store, no-cache, must-revalidate' });
@@ -851,6 +1201,10 @@ async function handleApi(req, res, url) {
 
   // 公开：图形验证码正确后才发送邮箱验证码（注册 / 验证码登录 / 找回密码共用）
   if (pathname === '/api/auth/email-code' && method === 'POST') {
+    // 邮箱验证码关闭时一律不发码（前端也不显示发码入口），避免绕过开关制造可用验证码。
+    if (!EMAIL_VERIFICATION) {
+      return sendJSON(res, 403, { error: '系统未启用邮箱验证码' });
+    }
     const ip = clientIp(req);
     if (emailRateLimited('ip:' + ip, 8, 60 * 1000)) return sendJSON(res, 429, { error: '请求过于频繁，请 1 分钟后再试' });
     let body;
@@ -907,24 +1261,36 @@ async function handleApi(req, res, url) {
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
     if (password.length < PASSWORD_MIN) return sendJSON(res, 400, { error: `密码至少 ${PASSWORD_MIN} 位` });
     if (password.length > PASSWORD_MAX) return sendJSON(res, 400, { error: '密码过长' });
-    // 图形验证码已在 email-code 阶段一次性消耗，这里只认邮箱验证码，防止绕过发码直接注册
-    const codeOk = await consumeEmailCode(email, 'register', body.emailCode);
-    if (!codeOk) {
-      loginFail(ip);
-      return sendJSON(res, 400, { error: '邮箱验证码不正确或已过期，请重新获取' });
+    if (EMAIL_VERIFICATION) {
+      // 开启：图形验证码已在 email-code 阶段一次性消耗，这里只认邮箱验证码，防止绕过发码直接注册
+      const codeOk = await consumeEmailCode(email, 'register', body.emailCode);
+      if (!codeOk) {
+        loginFail(ip);
+        writeAuthLog(req, { email, action: 'register', ok: false, reason: 'email_code_invalid' });
+        return sendJSON(res, 400, { error: '邮箱验证码不正确或已过期，请重新获取' });
+      }
+    } else {
+      // 关闭：不校验邮箱（开箱即用），但必须过一次性图形验证码，防止机器人批量刷号
+      if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
+        loginFail(ip);
+        writeAuthLog(req, { email, action: 'register', ok: false, reason: 'captcha_invalid' });
+        return sendJSON(res, 400, { error: '验证未通过，请重新完成验证' });
+      }
     }
     const hash = await hashPassword(password);
     try {
       const name = body.name ? String(body.name).trim().slice(0, 40) : null;
       const r = await pool.query(
-        'INSERT INTO users (email, password_hash, name, avatar) VALUES ($1,$2,$3,$4) RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled',
+        'INSERT INTO users (email, password_hash, name, avatar) VALUES ($1,$2,$3,$4) RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider',
         [email, hash, name, null]
       );
       const r0 = r.rows[0];
       loginOk(ip);
+      writeAuthLog(req, { uid: r0.id, email, action: 'register', ok: true });
       return sendJSON(res, 201, { data: { token: signToken(r0.id, r0.token_version || 0), user: userPublic(r0) } });
     } catch (e) {
       loginFail(ip);
+      writeAuthLog(req, { email, action: 'register', ok: false, reason: 'register_failed' });
       // 邮箱已被占用（唯一约束冲突）→ 明确告知，别把原因错误归到「邮箱格式」上。
       // 注意：注册接口本身即可用于探测邮箱是否注册，模糊化在这里几乎不产生额外防护，
       // 反而会误导用户；防账号枚举真正的关键在登录路径（不区分「邮箱不存在/密码错误」）。
@@ -934,25 +1300,28 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // 密码登录：默认只要邮箱 + 密码（与常见登录页一致）。
-  // 同一 IP 连续失败达到阈值后，才要求一次性图形验证码（前端内联展开，不弹窗）。
+  // 密码登录：每次都必须先过一次性图形验证码（前端点「登录」先弹窗，答对后才提交）。
+  // 后端强制校验：不带/过期/答错一律拒绝，且不计入密码失败限流（避免用无效挑战把 IP 锁死）。
   if (pathname === '/api/auth/login' && method === 'POST') {
     const ip = clientIp(req);
     if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
     try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
-    if (loginFailCount(ip) >= CAPTCHA_AFTER_FAILS) {
-      if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
-        return sendJSON(res, 428, { error: 'NEED_CAPTCHA' });
-      }
+    if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
+      writeAuthLog(req, { email: String(body.email || '').trim().toLowerCase(), action: 'login_pwd', ok: false, reason: 'captcha_invalid' });
+      return sendJSON(res, 400, { error: '验证未通过，请重新完成验证' });
     }
     const email = String(body.email || '').trim().toLowerCase();
     const password = String(body.password || '');
-    const r = await pool.query('SELECT id, email, password_hash, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled FROM users WHERE email=$1', [email]);
+    const r = await pool.query('SELECT id, email, password_hash, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE email=$1', [email]);
     const vr = r.rows.length
       ? await verifyPassword(password, r.rows[0].password_hash)
       : { ok: false, needsUpgrade: false };
-    if (!vr.ok) { loginFail(ip); return sendJSON(res, 401, { error: '邮箱或密码不正确' }); }
+    if (!vr.ok) {
+      loginFail(ip);
+      writeAuthLog(req, { uid: r.rows[0] && r.rows[0].id, email, action: 'login_pwd', ok: false, reason: 'bad_credentials' });
+      return sendJSON(res, 401, { error: '邮箱或密码不正确' });
+    }
     loginOk(ip);
     const r0 = r.rows[0];
     // 旧格式哈希在登录成功后自动升级成 OWASP 参数，用户无感、无需批量迁移
@@ -963,12 +1332,16 @@ async function handleApi(req, res, url) {
         console.log('[PWD] 已自动升级旧格式密码哈希，uid=' + r0.id);
       } catch (e) { console.error('[PWD] 自动升级哈希失败（不影响本次登录）', e.message); }
     }
+    writeAuthLog(req, { uid: r0.id, email, action: 'login_pwd', ok: true });
     return sendJSON(res, 200, { data: { token: signToken(r0.id, r0.token_version || 0), user: userPublic(r0) } });
   }
 
   // 验证码登录（免密）：邮箱 + 一次性邮箱验证码；发码时已过图形验证，这里只认邮箱码。
   // 账号不存在时复用同一句错误文案，避免被拿来枚举注册邮箱。
   if (pathname === '/api/auth/login-code' && method === 'POST') {
+    if (!EMAIL_VERIFICATION) {
+      return sendJSON(res, 403, { error: '系统未启用验证码登录，请使用密码登录' });
+    }
     const ip = clientIp(req);
     if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
@@ -976,16 +1349,29 @@ async function handleApi(req, res, url) {
     const email = String(body.email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
     const codeOk = await consumeEmailCode(email, 'code-login', body.emailCode);
-    if (!codeOk) { loginFail(ip); return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' }); }
-    const r = await pool.query('SELECT id, email, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled FROM users WHERE email=$1', [email]);
-    if (!r.rows.length) { loginFail(ip); return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' }); }
+    if (!codeOk) {
+      loginFail(ip);
+      writeAuthLog(req, { email, action: 'login_code', ok: false, reason: 'email_code_invalid' });
+      return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' });
+    }
+    const r = await pool.query('SELECT id, email, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE email=$1', [email]);
+    if (!r.rows.length) {
+      loginFail(ip);
+      writeAuthLog(req, { email, action: 'login_code', ok: false, reason: 'account_not_found' });
+      return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' });
+    }
     loginOk(ip);
     const r0 = r.rows[0];
+    writeAuthLog(req, { uid: r0.id, email, action: 'login_code', ok: true });
     return sendJSON(res, 200, { data: { token: signToken(r0.id, r0.token_version || 0), user: userPublic(r0) } });
   }
 
   // 公开：找回密码（P2）—— 邮箱验证码 + 新密码，成功后自增 token_version 踢掉所有旧设备
+  // 邮箱验证关闭时禁用：没有邮件核验身份，绝不能让人填个邮箱就改别人密码。
   if (pathname === '/api/auth/reset-password' && method === 'POST') {
+    if (!EMAIL_VERIFICATION) {
+      return sendJSON(res, 403, { error: '系统未启用邮箱验证，无法通过邮件找回密码，请联系管理员' });
+    }
     const ip = clientIp(req);
     if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
@@ -1008,13 +1394,14 @@ async function handleApi(req, res, url) {
     );
     if (!r.rows.length) return sendJSON(res, 404, { error: '该邮箱尚未注册' });
     loginOk(ip);
+    writeAuthLog(req, { uid: r.rows[0].id, email, action: 'reset_password', ok: true });
     return sendJSON(res, 200, { data: { ok: true } });
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
     const uid = await authUid(req);
     if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
-    const r = await pool.query('SELECT id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled FROM users WHERE id=$1', [uid]);
+    const r = await pool.query('SELECT id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE id=$1', [uid]);
     if (!r.rows.length) return sendJSON(res, 401, { error: '用户不存在' });
     return sendJSON(res, 200, { data: { user: userPublic(r.rows[0]) } });
   }
@@ -1035,9 +1422,40 @@ async function handleApi(req, res, url) {
     // 地图功能开关：只接受布尔值，未传则保持不变
     const mapEnabled = (body.mapEnabled === true || body.mapEnabled === 'true') ? true
       : (body.mapEnabled === false || body.mapEnabled === 'false') ? false : null;
+    // AI 直连配置（旧版单模型四列保留，供一键回退）：密钥只写库，不回显
+    const aiDirectEnabled = (body.aiDirectEnabled === true || body.aiDirectEnabled === 'true') ? true
+      : (body.aiDirectEnabled === false || body.aiDirectEnabled === 'false') ? false : null;
+    const aiDirectBaseUrl = body.aiDirectBaseUrl != null ? String(body.aiDirectBaseUrl).trim().slice(0, 300) : null;
+    const aiDirectApiKey = body.aiDirectApiKey != null ? String(body.aiDirectApiKey).trim().slice(0, 300) : null;
+    const aiDirectModel = body.aiDirectModel != null ? String(body.aiDirectModel).trim().slice(0, 120) : null;
+    if (aiDirectBaseUrl) {
+      try { await assertSafeUrl(aiDirectBaseUrl); }
+      catch (e) { return sendJSON(res, 400, { error: 'AI 接口地址不合法：' + e.message }); }
+    }
+    // 多模型清单：前端提交「脱敏视图 + 新填的 Key」。Key 留空 = 保留库里旧值，
+    // 传 '__clear__' = 清除；合并/白名单/去重在 ai-providers.js（唯一实现）。
+    const aiProvidersIn = (body.aiProviders !== undefined && body.aiProviders !== null) ? body.aiProviders : null;
+    // v5：值可能是 '服务商ID::模型ID'，放宽到 160；旧的单段值仍然接受。
+    const aiActiveProvider = body.aiActiveProvider != null ? String(body.aiActiveProvider).trim().slice(0, 160) : null;
+    let aiProvidersJson = null;
+    if (aiProvidersIn !== null) {
+      if (!Array.isArray(aiProvidersIn)) return sendJSON(res, 400, { error: '模型清单格式不对' });
+      try {
+        // 保存时逐个过 SSRF 校验；出站时 resolveAiEndpoint() 还会再过一次
+        for (const p of aiProvidersIn) {
+          const bu = p && p.baseUrl != null ? String(p.baseUrl).trim() : '';
+          if (bu) await assertSafeUrl(bu);
+        }
+        const oldRow = await pool.query('SELECT ai_providers FROM users WHERE id=$1', [uid]);
+        const merged = aiProviders.mergeProviders(oldRow.rows[0] && oldRow.rows[0].ai_providers, aiProvidersIn);
+        aiProvidersJson = JSON.stringify(merged);
+      } catch (e) {
+        return sendJSON(res, 400, { error: '模型配置不合法：' + e.message });
+      }
+    }
     const r = await pool.query(
-      'UPDATE users SET name = COALESCE($1, name), avatar = COALESCE($2, avatar), demand = COALESCE($3::jsonb, demand), amap_js_key = COALESCE($4, amap_js_key), amap_security_code = COALESCE($5, amap_security_code), amap_web_key = COALESCE($6, amap_web_key), map_enabled = COALESCE($7, map_enabled) WHERE id=$8 RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled',
-      [name, avatar, demandRaw, amapJsKey, amapSecurityCode, amapWebKey, mapEnabled, uid]
+      'UPDATE users SET name = COALESCE($1, name), avatar = COALESCE($2, avatar), demand = COALESCE($3::jsonb, demand), amap_js_key = COALESCE($4, amap_js_key), amap_security_code = COALESCE($5, amap_security_code), amap_web_key = COALESCE($6, amap_web_key), map_enabled = COALESCE($7, map_enabled), ai_direct_enabled = COALESCE($8, ai_direct_enabled), ai_direct_base_url = COALESCE($9, ai_direct_base_url), ai_direct_api_key = COALESCE($10, ai_direct_api_key), ai_direct_model = COALESCE($11, ai_direct_model), ai_providers = COALESCE($13::jsonb, ai_providers), ai_active_provider = COALESCE($14, ai_active_provider) WHERE id=$12 RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider',
+      [name, avatar, demandRaw, amapJsKey, amapSecurityCode, amapWebKey, mapEnabled, aiDirectEnabled, aiDirectBaseUrl, aiDirectApiKey, aiDirectModel, uid, aiProvidersJson, aiActiveProvider]
     );
     const u = r.rows[0];
     return sendJSON(res, 200, { data: { user: userPublic(u) } });
@@ -1048,12 +1466,111 @@ async function handleApi(req, res, url) {
     if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
     // 自增令牌版本：使该用户所有已签发令牌立即失效（支持吊销 / 一键登出）
     await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id=$1', [uid]);
+    writeAuthLog(req, { uid, action: 'logout', ok: true });
     return sendJSON(res, 200, { data: { ok: true } });
   }
 
   // 以下接口需要登录
   const uid = await authUid(req);
   if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
+
+  // ---------- 运行监控：只读接口 ----------
+  // 普通用户强制只看自己；仅 .env 的 ADMIN_EMAILS 列出的管理员可带 scope=all 看全局。
+  // 所有用户输入都走参数占位符（ph），SQL 里不拼任何用户字符串。
+  if (pathname.startsWith('/api/monitor/') && method === 'GET') {
+    const admin = await isAdmin(uid);
+    const all = admin && url.searchParams.get('scope') === 'all';
+    const sp = url.searchParams;
+    const mk = () => { const a = []; return { a, ph: (v) => { a.push(v); return '$' + a.length; } }; };
+    const monRange = (v) => ({ '7d': 7, '30d': 30, '90d': 90 }[String(v || '')] || 30);
+    const clampInt = (v, d, lo, hi) => {
+      // 坑：Number(null) === 0 是「有限数」，不特判会把没传 limit 的请求压成 1 条
+      if (v == null || v === '') return d;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d;
+    };
+    // 「今日 / 本月」按北京时间算，避免库在 UTC 时把早上 8 点前的记录算到昨天
+    const DAY0 = `date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`;
+    const MON0 = `date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`;
+    const q = monText(sp.get('q'), 60).trim().toLowerCase();
+    const okF = sp.get('ok');
+    const days = monRange(sp.get('range'));
+    let myEmail = '';
+    if (!all) {
+      const ur = await pool.query('SELECT email FROM users WHERE id=$1', [uid]);
+      myEmail = (ur.rows[0] && ur.rows[0].email) || '';
+    }
+    // 登录失败时可能没有 owner_id，用「同邮箱且 owner_id 为空」补回本人记录
+    const authScope = (m) => all ? 'TRUE'
+      : `(owner_id = ${m.ph(uid)}::uuid OR (owner_id IS NULL AND lower(coalesce(email,'')) = lower(${m.ph(myEmail)}::text)))`;
+    const aiScope = (m) => all ? 'TRUE' : `owner_id = ${m.ph(uid)}::uuid`;
+
+    if (pathname === '/api/monitor/overview') {
+      const m1 = mk(), m2 = mk(), m3 = mk();
+      const [la, aa, bm, bu] = await Promise.all([
+        pool.query(`SELECT count(*) FILTER (WHERE created_at >= ${DAY0})::int AS today,
+                           count(*) FILTER (WHERE created_at >= ${MON0})::int AS month,
+                           count(*) FILTER (WHERE created_at >= ${DAY0} AND NOT ok)::int AS failed_today
+                    FROM auth_logs WHERE ${authScope(m1)}`, m1.a),
+        pool.query(`SELECT count(*) FILTER (WHERE created_at >= ${DAY0})::int AS today,
+                           count(*) FILTER (WHERE created_at >= ${MON0})::int AS month,
+                           count(*) FILTER (WHERE created_at >= ${DAY0} AND NOT ok)::int AS failed_today,
+                           coalesce(sum(total_tokens) FILTER (WHERE created_at >= ${DAY0}), 0)::int AS tokens_today,
+                           coalesce(sum(total_tokens) FILTER (WHERE created_at >= ${MON0}), 0)::int AS tokens_month,
+                           count(*) FILTER (WHERE estimated)::int AS estimated,
+                           coalesce(avg(latency_ms) FILTER (WHERE created_at >= ${DAY0}), 0)::int AS avg_ms
+                    FROM ai_usage_logs WHERE ${aiScope(m2)}`, m2.a),
+        pool.query(`SELECT coalesce(nullif(model,''),'(未填写)') AS model, count(*)::int AS calls,
+                           coalesce(sum(total_tokens),0)::int AS tokens,
+                           count(*) FILTER (WHERE NOT ok)::int AS failed
+                    FROM ai_usage_logs WHERE ${aiScope(m3)} AND created_at >= ${MON0}
+                    GROUP BY 1 ORDER BY calls DESC LIMIT 10`, m3.a),
+        all ? pool.query(`SELECT coalesce(u.email,'(已删除用户)') AS email, count(*)::int AS calls,
+                                 coalesce(sum(l.total_tokens),0)::int AS tokens
+                          FROM ai_usage_logs l LEFT JOIN users u ON u.id = l.owner_id
+                          WHERE l.created_at >= ${MON0}
+                          GROUP BY 1 ORDER BY calls DESC LIMIT 10`, []) : Promise.resolve({ rows: [] })
+      ]);
+      return sendJSON(res, 200, { data: {
+        admin, scope: all ? 'all' : 'self', retentionDays: MONITOR_RETENTION_DAYS,
+        adminConfigured: ADMIN_EMAILS.size > 0,
+        login: la.rows[0], ai: aa.rows[0], byModel: bm.rows, byUser: bu.rows
+      } });
+    }
+
+    if (pathname === '/api/monitor/auth-logs') {
+      const m = mk();
+      let w = authScope(m) + ` AND created_at >= now() - (${m.ph(days)}::int * interval '1 day')`;
+      if (okF === '1' || okF === '0') w += ` AND ok = ${m.ph(okF === '1')}::boolean`;
+      const act = monText(sp.get('action'), 32);
+      if (act && /^[a-z_]{1,32}$/.test(act)) w += ` AND action = ${m.ph(act)}::text`;
+      if (q) w += ` AND (lower(coalesce(email,'')) LIKE ${m.ph('%' + q + '%')} OR lower(coalesce(ip,'')) LIKE ${m.ph('%' + q + '%')})`;
+      const limit = clampInt(sp.get('limit'), 50, 1, 200);
+      const offset = clampInt(sp.get('offset'), 0, 0, 100000);
+      const total = await pool.query(`SELECT count(*)::int AS total FROM auth_logs WHERE ${w}`, m.a.slice());
+      const rows = await pool.query(`SELECT id, created_at, email, action, ok, reason, ip, ua FROM auth_logs
+        WHERE ${w} ORDER BY created_at DESC, id DESC LIMIT ${m.ph(limit)}::int OFFSET ${m.ph(offset)}::int`, m.a);
+      return sendJSON(res, 200, { data: { rows: rows.rows, total: total.rows[0].total, limit, offset } });
+    }
+
+    if (pathname === '/api/monitor/ai-logs') {
+      const m = mk();
+      let w = aiScope(m) + ` AND created_at >= now() - (${m.ph(days)}::int * interval '1 day')`;
+      if (okF === '1' || okF === '0') w += ` AND ok = ${m.ph(okF === '1')}::boolean`;
+      const ent = monText(sp.get('entry'), 32);
+      if (ent && /^[a-z_-]{1,32}$/.test(ent)) w += ` AND entry = ${m.ph(ent)}::text`;
+      if (q) w += ` AND (lower(coalesce(model,'')) LIKE ${m.ph('%' + q + '%')} OR lower(coalesce(provider,'')) LIKE ${m.ph('%' + q + '%')} OR lower(coalesce(error,'')) LIKE ${m.ph('%' + q + '%')})`;
+      const limit = clampInt(sp.get('limit'), 50, 1, 200);
+      const offset = clampInt(sp.get('offset'), 0, 0, 100000);
+      const total = await pool.query(`SELECT count(*)::int AS total FROM ai_usage_logs WHERE ${w}`, m.a.slice());
+      const rows = await pool.query(`SELECT id, created_at, entry, channel, provider, model, stream,
+        prompt_tokens, completion_tokens, total_tokens, estimated, latency_ms, ok, status_code, error
+        FROM ai_usage_logs WHERE ${w} ORDER BY created_at DESC, id DESC
+        LIMIT ${m.ph(limit)}::int OFFSET ${m.ph(offset)}::int`, m.a);
+      return sendJSON(res, 200, { data: { rows: rows.rows, total: total.rows[0].total, limit, offset } });
+    }
+    return sendJSON(res, 404, { error: '未知监控接口' });
+  }
 
   // 修改密码（P0）：校验原密码 → 换新哈希 → 自增 token_version 踢掉其它设备
   if (pathname === '/api/auth/change-password' && method === 'POST') {
@@ -1066,10 +1583,14 @@ async function handleApi(req, res, url) {
     const r = await pool.query('SELECT password_hash FROM users WHERE id=$1', [uid]);
     if (!r.rows.length) return sendJSON(res, 401, { error: '用户不存在' });
     const vr = await verifyPassword(oldPw, r.rows[0].password_hash);
-    if (!vr.ok) return sendJSON(res, 400, { error: '原密码不正确' });
+    if (!vr.ok) {
+      writeAuthLog(req, { uid, action: 'change_password', ok: false, reason: 'bad_old_password' });
+      return sendJSON(res, 400, { error: '原密码不正确' });
+    }
     const hash = await hashPassword(newPw);
     // 当前设备的旧 token 也会失效，前端收到成功后引导重新登录
     await pool.query('UPDATE users SET password_hash=$1, token_version = token_version + 1 WHERE id=$2', [hash, uid]);
+    writeAuthLog(req, { uid, action: 'change_password', ok: true });
     return sendJSON(res, 200, { data: { ok: true } });
   }
 
@@ -1309,13 +1830,150 @@ async function handleApi(req, res, url) {
 
   // ---------- AI 通用调用封装：服务端代理 freellmapi（token 不落前端） ----------
   if (pathname === '/api/ai/status' && method === 'GET') {
-    const configured = !!dbConfig.freellmApiKey;
+    const r = await pool.query(
+      'SELECT ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE id=$1', [uid]
+    );
+    const u = r.rows[0] || {};
+    const directOn = !!u.ai_direct_enabled;
+    const picked = aiProviders.pickActive(u.ai_providers, u.ai_active_provider, directOn, u);
+    const usingDirect = directOn && picked.ok && !!picked.provider;
+    const p = picked.provider || {};
     return sendJSON(res, 200, {
       data: {
-        configured,
-        baseUrl: String(dbConfig.freellmBaseUrl || ''),
-        model: 'auto（由 freellmapi 路由器按你已配置的兜底链挑选模型）',
-        note: configured ? '' : '请在环境变量或 .env 配置 FREELLM_API_KEY（freellmapi 统一令牌）'
+        channel: usingDirect ? 'direct' : 'gateway',
+        configured: !!dbConfig.freellmApiKey || usingDirect,
+        baseUrl: usingDirect ? p.baseUrl : String(dbConfig.freellmBaseUrl || ''),
+        model: usingDirect ? p.model : 'auto（由 freellmapi 路由器自动挑选模型）',
+        providerName: usingDirect ? (p.name || '') : '',
+        // v5：当前生效模型的可读名、类型标注与复合 key（类型只做展示，不参与选路）
+        modelName: usingDirect ? (p.modelName || p.model) : '',
+        modelType: usingDirect ? (p.modelType || 'llm') : '',
+        activeKey: usingDirect ? (p.activeKey || '') : '',
+        visionModel: String(dbConfig.freellmVisionModel || 'auto'),
+        aiDirectEnabled: directOn,
+        aiDirectKeySet: usingDirect,
+        aiDirectComplete: picked.ok,
+        aiProviders: aiProviders.sanitizeProviders(u.ai_providers),
+        aiActiveProvider: u.ai_active_provider || '',
+        providerCount: aiProviders.sanitizeProviders(u.ai_providers).length,
+        note: (directOn && !picked.ok)
+          ? 'AI 直连已启用但配置不完整：请在设置页补齐 ' + picked.missing.join('、') + '，或关闭直连'
+          : (usingDirect ? '' : '当前走本机网关自动选模型；如需直连请在设置页选一个模型并设为当前')
+      }
+    });
+  }
+
+  // ---- 模型检测：拿「弹窗里正在编辑的」地址/Key/模型名真发一次请求，回答「通不通、能不能用」 ----
+  // 分两步：① 纯文本（判断接口通、模型存在、Key 有效）② 带一张内置小图（判断支不支持看图）。
+  // Key 只在本次请求内存里用完即弃，不落日志、不回显；地址照旧过 assertSafeUrl 防内网探测。
+  // 没传 Key 且给了 pid 时，复用库里已保存的那把（弹窗里改地址不必重填 Key）。
+  if (pathname === '/api/ai/test-provider' && method === 'POST') {
+    let body;
+    try { body = await readBodyLimit(req, 64 * 1024, 256 * 1024); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    const baseUrl = String(body.baseUrl || '').trim().replace(/\/+$/, '');
+    const model = String(body.model || '').trim().slice(0, 120);
+    const pid = String(body.pid || '').trim().slice(0, 60);
+    let apiKey = String(body.apiKey || '').trim();
+    if (!model) return sendJSON(res, 400, { error: '先在「模型 ID」里填模型名，再点检测' });
+    if (!/^https?:\/\//i.test(baseUrl)) return sendJSON(res, 400, { error: '接口地址要以 http:// 或 https:// 开头' });
+    if (!apiKey && pid) {
+      const rr = await pool.query('SELECT ai_providers FROM users WHERE id=$1', [uid]);
+      const saved = aiProviders.asList((rr.rows[0] || {}).ai_providers).find((x) => x && x.id === pid);
+      if (saved && typeof saved.apiKey === 'string') apiKey = saved.apiKey.trim();
+    }
+    if (!apiKey) return sendJSON(res, 400, { error: '还没填 API Key（已保存过的 Key 会自动复用）' });
+    try { await assertSafeUrl(baseUrl); }
+    catch (e) { return sendJSON(res, 400, { error: '接口地址不可用：' + e.message }); }
+
+    // 64×64 白底 + 3 个黑方块，158 字节；问题固定，答案应为 3
+    const TEST_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAZUlEQVR42u3XMQrAMAwDwCjk/19292Tx1BJ6Gg0aDozBqapxc+a4PAAAfwesc5Sk39+O2PtdKwQAAAAAAAAAAPBd4qkHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6OcBxocPe7PbmGwAAAAASUVORK5CYII=';
+    const probe = async (content, stage) => {
+      const t0 = Date.now();
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 25000);
+      // 「检测」也是真实模型请求，两次探测各记一条；不记 API Key、不记图片内容
+      const seed = {
+        owner_id: uid, entry: stage === 'vision' ? 'test-vision' : 'test-text',
+        channel: 'direct', provider: monHost(baseUrl), model, stream: false, promptEstimate: 8
+      };
+      try {
+        const r = await fetch(baseUrl + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content }], max_tokens: 32, temperature: 0, stream: false }),
+          signal: ctl.signal
+        });
+        const txt = await r.text();
+        let j = null; try { j = JSON.parse(txt); } catch (_) {}
+        const ms = Date.now() - t0;
+        writeAiLog(seed, {
+          ok: !!r.ok, statusCode: r.status, latencyMs: ms, usage: usageOf(j),
+          error: r.ok ? null : (txt || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+        });
+        return { ok: r.ok, status: r.status, json: j, text: txt, ms };
+      } catch (e) {
+        writeAiLog(seed, { ok: false, latencyMs: Date.now() - t0, error: String(e && e.message || e).slice(0, 200) });
+        throw e;
+      } finally { clearTimeout(timer); }
+    };
+    // 上游的错误文案五花八门（error.message / error.msg / 纯文本 / 整页 HTML），统一抠一句人话
+    const errOf = (r) => {
+      const e = r.json && r.json.error;
+      let raw = (e && (e.message || e.msg || e.code || e.type)) || (r.json && (r.json.message || r.json.detail));
+      if (!raw && !r.json && r.text) {
+        // 返回的是网页：多半是地址写错了（少了 /v1、或填成了控制台首页），别把整页 HTML 丢给用户
+        const t = String(r.text);
+        const title = (t.match(/<title>([^<]{1,80})<\/title>/i) || [])[1];
+        raw = title
+          ? '接口地址不对：返回的是网页「' + title.trim() + '」而不是 API 响应，检查地址是否以 /v1 结尾（如 https://api.xxx.com/v1）'
+          : '接口返回的不是 JSON（HTTP ' + r.status + '）：' + t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+      }
+      if (!raw) raw = 'HTTP ' + r.status + (r.status === 404 ? '：接口或模型不存在' : '');
+      return String(raw).slice(0, 300);
+    };
+
+    let t1;
+    try { t1 = await probe('回复两个字：可用', 'text'); }
+    catch (e) {
+      const msg = (e && e.name === 'AbortError') ? '请求超时：25 秒没有响应'
+        : /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|ETIMEDOUT/i.test(String(e && e.message || e))
+          ? '接口地址连不上（地址写错／服务没开／网络不通）'
+          : String(e && e.message || e);
+      return sendJSON(res, 200, { data: { ok: false, stage: 'text', error: msg } });
+    }
+    if (!t1.ok) {
+      return sendJSON(res, 200, { data: { ok: false, stage: 'text', status: t1.status, error: errOf(t1) } });
+    }
+    const upstreamModel = (t1.json && t1.json.model) || '';
+    const c1 = t1.json && t1.json.choices && t1.json.choices[0];
+    if (!c1 || !c1.message) {
+      return sendJSON(res, 200, { data: { ok: false, stage: 'text', status: t1.status, error: '接口有响应但不是标准 chat/completions 格式：' + String(t1.text || '').slice(0, 160) } });
+    }
+    const reply = String(c1.message.content == null ? '' : c1.message.content).trim().slice(0, 40);
+
+    // ② 带图：能不能看图
+    let vision = { supported: false, ok: false, note: '' };
+    try {
+      const t2 = await probe([
+        { type: 'text', text: '这张图里有几个黑色方块？只回一个阿拉伯数字。' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,' + TEST_PNG } }
+      ], 'vision');
+      if (!t2.ok) {
+        vision = { supported: false, ok: false, note: errOf(t2).slice(0, 160) };
+      } else {
+        const c2 = t2.json && t2.json.choices && t2.json.choices[0];
+        const ans = String((c2 && c2.message && c2.message.content) || '').trim();
+        vision = { supported: true, ok: /(^|\D)3(\D|$)|三/.test(ans), note: ans.slice(0, 40) || '（模型没回内容）', ms: t2.ms };
+      }
+    } catch (e) {
+      vision = { supported: false, ok: false, note: (e && e.name === 'AbortError') ? '看图请求超时' : String(e && e.message || e).slice(0, 160) };
+    }
+
+    return sendJSON(res, 200, {
+      data: {
+        ok: true, stage: 'ok', model, upstreamModel,
+        latencyMs: t1.ms, reply, vision,
+        note: (upstreamModel && upstreamModel !== model) ? ('上游实际用的是 ' + upstreamModel) : ''
       }
     });
   }
@@ -1324,16 +1982,18 @@ async function handleApi(req, res, url) {
     let body;
     try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
     const messages = body.messages;
-    const model = String(body.model || 'auto');
+    let model = String(body.model || 'auto');
     const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
     const maxTokens = typeof body.maxTokens === 'number' ? body.maxTokens : 1024;
     const stream = !!body.stream;
 
     let resp;
     try {
-      resp = await callFreellm({ messages, model, temperature, maxTokens, stream });
+      const ep = await resolveAiEndpoint(uid, model);
+      model = ep.model;
+      resp = await callFreellm({ messages, model, temperature, maxTokens, stream, endpoint: ep, meta: { uid, entry: 'chat' } });
     } catch (e) {
-      return sendJSON(res, 502, { error: '调用 freellmapi 失败：' + e.message });
+      return sendJSON(res, 502, { error: '调用 AI 接口失败：' + e.message });
     }
 
     // 流式：直接转发上游 SSE（前端可用 fetch 流式读取 / 后续接 EventSource）
@@ -1415,16 +2075,19 @@ async function handleApi(req, res, url) {
           (platform ? '【来源平台】' + platform + '\n\n' : '') +
           '请从以上内容提取房源结构化字段，只返回 JSON。';
       }
-      const model = useImages ? (dbConfig.freellmVisionModel || 'auto') : 'auto';
+      const requestedModel = useImages ? (dbConfig.freellmVisionModel || 'auto') : 'auto';
+      const ep = await resolveAiEndpoint(uid, requestedModel);
       const llmResp = await callFreellm({
-        model,
+        model: ep.model,
         temperature: 0.2,
         maxTokens: 1500,
         messages: [
           { role: 'system', content: AI_EXTRACT_SCHEMA },
           { role: 'user', content: userContent }
         ],
-        images: useImages ? images : null
+        images: useImages ? images : null,
+        endpoint: ep,
+        meta: { uid, entry: 'extract' }
       });
       if (!llmResp.ok) {
         const errTxt = await llmResp.text().catch(() => '');
@@ -1489,7 +2152,10 @@ function serveStatic(req, res, url) {
     const ext = path.extname(filePath).toLowerCase();
     const isMedia = filePath.startsWith(path.join(ROOT, 'media'));
     // 禁用启发式缓存：本地开发频繁改版，必须每次拿到最新文件（no-cache 仍允许 304 协商）
-    head(res, 200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' }, isMedia);
+    const staticHeaders = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
+    // 装修设计：该页由主界面用同源 iframe 承载，需单独放宽 X-Frame-Options（其它页面仍 DENY）
+    if (urlPath === '/floorplan.html') staticHeaders['X-Frame-Options'] = 'SAMEORIGIN';
+    head(res, 200, staticHeaders, isMedia);
     res.end(data);
   });
 }
@@ -1520,9 +2186,13 @@ const server = http.createServer(async (req, res) => {
 async function start() {
   try {
     await pool.query('SELECT 1');
-    console.log('✅ 已连接到本地 PostgreSQL（house_view）');
+    console.log(EMBEDDED_DB ? '✅ 内嵌 PostgreSQL 已连接' : '✅ 已连接到本地 PostgreSQL（house_view）');
   } catch (e) {
-    console.error('⚠️ 无法连接本地 PostgreSQL：', e.message);
+    console.error(EMBEDDED_DB ? '❌ 内嵌数据库启动失败：' : '⚠️ 无法连接本地 PostgreSQL：', e.message);
+    if (EMBEDDED_DB) {
+      console.error('   请检查：数据目录是否可写、磁盘空间是否充足、包内 node_modules/@electric-sql/pglite 是否完整。');
+      process.exit(1);
+    }
     console.error('   请确认 PostgreSQL 服务已启动，且 config/db.js 中的账号密码正确。');
   }
   try {
@@ -1530,10 +2200,13 @@ async function start() {
     console.log('✅ 数据表已就绪（users / properties）');
   } catch (e) {
     console.error('⚠️ 建表失败：', e.message);
+    if (EMBEDDED_DB) process.exit(1);
   }
   server.listen(PORT, () => {
-    console.log(`看房记录工具已启动： http://127.0.0.1:${PORT}/`);
-    console.log(`（数据保存在本地 PostgreSQL：house_view 库，不联网、不上传）`);
+    console.log(`看房记录工具已启动： http://127.0.0.1:${PORT}/  （浏览器打开 http://服务器IP:${PORT}/）`);
+    console.log(EMBEDDED_DB
+      ? `（数据保存在目录 ${require('./config/db-embedded').embeddedDataDir()}，备份时整个目录拷走即可）`
+      : `（数据保存在本地 PostgreSQL：house_view 库，不联网、不上传）`);
   });
 }
 

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>看房记录 · 房源采集</title>
+<style>
+  body { margin:0; width:360px; max-height:600px; overflow-y:auto; padding:14px; font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:#1f2733; background:#fff; }
+  h1 { font-size:15px; margin:0 0 10px; color:#1a56db; }
+  .card { border:1px solid #e3e8ef; border-radius:10px; padding:10px; margin-bottom:10px; background:#fafcff; }
+  .name { font-weight:700; font-size:14px; }
+  .muted { color:#6b7686; font-size:12px; }
+  .stats { margin-top:6px; font-size:12px; color:#42526a; }
+  .ops { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-bottom:10px; }
+  button { border:1px solid #d9dee7; background:#f7f9fc; border-radius:8px; padding:7px 8px; font-size:12px; cursor:pointer; color:#1f2733; }
+  button:hover { background:#eef3fb; }
+  button.primary { background:#1a56db; border-color:#1a56db; color:#fff; }
+  button.primary:hover { background:#1648b8; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  details { margin-bottom:10px; }
+  summary { cursor:pointer; font-size:12px; color:#42526a; }
+  #fields { max-height:190px; overflow:auto; margin-top:6px; font-size:12px; }
+  .f { display:flex; gap:6px; padding:2px 0; border-bottom:1px dashed #edf0f5; }
+  .f .k { flex:0 0 96px; color:#6b7686; }
+  .f .v { flex:1; word-break:break-all; }
+  .f.empty .v { color:#b0b8c4; }
+  input { width:100%; box-sizing:border-box; border:1px solid #d9dee7; border-radius:7px; padding:6px 8px; font-size:12px; margin-top:4px; }
+  #msg { min-height:18px; font-size:12px; color:#8a5a00; margin-top:8px; }
+  .diag { border-color:#d6e4ff; background:#f5f9ff; }
+  .diag .ok { color:#166534; }
+  .diag .warn { color:#a15c00; }
+  .diag .bad { color:#b42318; }
+  .diag .src { color:#42526a; }
+  /* 5 步向导 */
+  .guide { border-color:#c7d9ff; background:#f5f9ff; padding:12px 10px 4px; }
+  .guide-hd { font-weight:700; font-size:13px; color:#1a56db; }
+  .guide-sub { color:#6b7686; font-size:11px; margin:2px 0 6px; }
+  .step { display:flex; align-items:center; gap:7px; padding:6px 0; border-top:1px dashed #e3e8ef; }
+  .snum { flex:0 0 20px; width:20px; height:20px; border-radius:50%; background:#e5eaf2; color:#6b7686; font-size:11px; font-weight:700; text-align:center; line-height:20px; }
+  .step.cur .snum { background:#1a56db; color:#fff; }
+  .step.done .snum { background:#16a34a; color:#fff; }
+  .sbody { flex:1; min-width:0; }
+  .stitle { font-size:12px; font-weight:600; }
+  .step.done .stitle { color:#166534; }
+  .sdesc { font-size:11px; color:#8a94a6; margin-top:1px; word-break:break-all; }
+  .sact { flex:0 0 auto; }
+  .sact button { padding:5px 7px; font-size:11px; }
+  .sflag { flex:0 0 14px; font-size:12px; color:#16a34a; text-align:center; font-weight:700; }
+</style>
+</head>
+<body>
+  <h1>看房记录 · 房源采集</h1>
+
+  <div class="card guide">
+    <div class="guide-hd">导入系统 · 5 步</div>
+    <div class="guide-sub">按顺序做完一次，以后直接点第 5 步</div>
+
+    <div class="step" id="s1">
+      <div class="snum">1</div>
+      <div class="sbody">
+        <div class="stitle">填写系统地址</div>
+        <input id="base" placeholder="http://42.194.228.171:8787" />
+      </div>
+      <div class="sflag" id="f1"></div>
+    </div>
+
+    <div class="step" id="s2">
+      <div class="snum">2</div>
+      <div class="sbody">
+        <div class="stitle">保存地址</div>
+        <div class="sdesc" id="d2">点右边按钮，浏览器询问权限时点允许</div>
+      </div>
+      <div class="sact"><button id="saveCfg">保存</button></div>
+      <div class="sflag" id="f2"></div>
+    </div>
+
+    <div class="step" id="s3">
+      <div class="snum">3</div>
+      <div class="sbody">
+        <div class="stitle">测试连接</div>
+        <div class="sdesc" id="d3">确认服务器能访问</div>
+      </div>
+      <div class="sact"><button id="testConn">测试</button></div>
+      <div class="sflag" id="f3"></div>
+    </div>
+
+    <div class="step" id="s4">
+      <div class="snum">4</div>
+      <div class="sbody">
+        <div class="stitle">打开系统并登录</div>
+        <div class="sdesc" id="d4">首次使用需注册账号，登录后自动取得登录态</div>
+      </div>
+      <div class="sact"><button id="openSys">打开</button></div>
+      <div class="sflag" id="f4"></div>
+    </div>
+
+    <div class="step" id="s5">
+      <div class="snum">5</div>
+      <div class="sbody">
+        <div class="stitle">一键导入系统</div>
+        <div class="sdesc" id="d5">前面做过的可跳过，直接点这里</div>
+      </div>
+      <div class="sact"><button class="primary" id="push">导入</button></div>
+      <div class="sflag" id="f5"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="name" id="name">尚未采集到房源</div>
+    <div class="muted" id="phase">打开安居客楼盘页或贝壳房源详情页即会自动采集</div>
+    <div class="stats" id="stats"></div>
+  </div>
+  <div class="card diag" id="diagCard">
+    <div class="muted" style="font-weight:600">当前页面与数据来源</div>
+    <div id="diag" class="muted">正在检查…</div>
+  </div>
+  <div class="ops">
+    <button id="csv">下载 CSV</button>
+    <button id="copy">复制 JSON</button>
+    <button id="clear">清空重采</button>
+  </div>
+  <details>
+    <summary id="fieldsHead">字段明细（系统 CSV 列）</summary>
+    <div id="fields"></div>
+  </details>
+  <div id="msg"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

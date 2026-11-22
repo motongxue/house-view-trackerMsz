@@ -12,6 +12,10 @@ public/media/
 
 # ============ 依赖 ============
 node_modules/
+agent/.venv/
+agent/logs/
+__pycache__/
+*.pyc
 
 # ============ 构建/会话产物 ============
 .genie

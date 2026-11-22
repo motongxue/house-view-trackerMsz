@@ -56,8 +56,11 @@ const Geo = (function () {
   async function geocodeLocal(text, city) {
     const res = await fetch('./data/gazetteer.json');
     const gaz = await res.json();
-    const entry = gaz[city] || gaz['成都'];
-    if (!entry || !Array.isArray(entry.communities)) throw new Error('本地库无该城市数据');
+    const key = String(city || '').trim();
+    const entry = gaz[key] || gaz[key.replace(/市$/, '')];
+    if (!entry || !Array.isArray(entry.communities)) {
+      throw new Error('该城市暂无离线小区库，请配置高德 Key 或直接在地图上点选');
+    }
     const q = (text || '').toLowerCase();
     for (const c of entry.communities) {
       const name = (c.name || '').toLowerCase();

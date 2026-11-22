@@ -3,18 +3,20 @@
 const Api = (function () {
   const BASE = '';
 
-  function token() { return localStorage.getItem('hvt_token'); }
+  // 令牌只存 sessionStorage：关闭浏览器/标签页即失效（配合服务端 2 小时有效期，双保险）。
+  // 不用 localStorage，避免几天不访问后仍处于登录态。
+  function token() { return sessionStorage.getItem('hvt_token'); }
   function setSession(tok, user) {
     if (tok) {
-      localStorage.setItem('hvt_token', tok);
-      localStorage.setItem('hvt_user', JSON.stringify(user || null));
+      sessionStorage.setItem('hvt_token', tok);
+      sessionStorage.setItem('hvt_user', JSON.stringify(user || null));
     } else {
-      localStorage.removeItem('hvt_token');
-      localStorage.removeItem('hvt_user');
+      sessionStorage.removeItem('hvt_token');
+      sessionStorage.removeItem('hvt_user');
     }
   }
   function currentUser() {
-    const u = localStorage.getItem('hvt_user');
+    const u = sessionStorage.getItem('hvt_user');
     try { return u ? JSON.parse(u) : null; } catch { return null; }
   }
 
@@ -36,6 +38,12 @@ const Api = (function () {
     let data = null;
     try { data = await res.json(); } catch { /* 可能无响应体 */ }
     if (!res.ok) {
+      // 会话失效：携带令牌却返回 401（未登录/过期）→ 清本地会话并通知界面回登录页。
+      // 登录接口本身不带令牌，其 401（密码错误）不满足 tk 条件，不会误触发退出。
+      if (res.status === 401 && tk) {
+        setSession(null);
+        try { window.dispatchEvent(new CustomEvent('hvt:unauthorized')); } catch (e) {}
+      }
       const msg = (data && data.error) ? data.error : ('请求失败（HTTP ' + res.status + '）');
       const err = new Error(msg); err.status = res.status; throw err;
     }
@@ -49,16 +57,25 @@ const Api = (function () {
     put: (p, b) => request('PUT', p, b),
     del: (p) => request('DELETE', p),
     captcha: () => request('GET', '/api/auth/captcha'),
+    // 非敏感登录配置：邮箱验证码是否启用（决定登录页显示哪套表单）
+    authConfig: () => request('GET', '/api/auth/config'),
     // 图形验证码正确后，由服务端发送邮箱验证码（注册 / 登录 / 找回密码共用）
     emailCode: (email, purpose, cap) => request('POST', '/api/auth/email-code', {
       email, purpose, captchaId: cap && cap.id, captchaAnswer: cap && cap.answer
     }),
-    register: (email, password, emailCode) => request('POST', '/api/auth/register', { email, password, emailCode }),
-    // 密码登录：cap 只有在该 IP 连续失败、后端要求图形验证时才传；
-    // 没被要求验证时请求体只含 email/password，不塞 captchaId:null 之类空字段
-    login: (email, password, cap) => request('POST', '/api/auth/login',
-      cap ? { email, password, captchaId: cap.id, captchaAnswer: cap.answer }
-          : { email, password }),
+    // 邮箱验证开启时传 emailCode；关闭时传图形验证码 cap（后端二选一校验）
+    register: (email, password, emailCode, cap) => request('POST', '/api/auth/register', {
+      email, password, emailCode,
+      captchaId: cap && cap.id, captchaAnswer: cap && cap.answer
+    }),
+    // 密码登录：每次都必须携带一次性图形验证码结果（前端先弹窗，答对后才提交）；
+    // 缺 cap 直接本地拒绝，不发裸登录请求
+    login: (email, password, cap) => {
+      if (!cap || !cap.id) return Promise.reject(new Error('请先完成安全验证'));
+      return request('POST', '/api/auth/login', {
+        email, password, captchaId: cap.id, captchaAnswer: cap.answer
+      });
+    },
     // 验证码登录：邮箱 + 一次性邮箱码，免密
     loginByCode: (email, emailCode) => request('POST', '/api/auth/login-code', { email, emailCode }),
     resetPassword: (email, emailCode, newPassword) => request('POST', '/api/auth/reset-password', { email, emailCode, newPassword }),

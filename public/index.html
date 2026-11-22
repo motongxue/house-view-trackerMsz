@@ -3,13 +3,17 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- 贝壳外链图片 CDN 会校验 Referer：来自本系统域名的请求一律 403（只有无 Referer / ke.com 放行）。
+       服务端已统一返回 Referrer-Policy: no-referrer，这里加页面级同款策略做双保险：
+       反向代理若漏传该响应头，详情页图片仍不会裂。勿删。 -->
+  <meta name="referrer" content="no-referrer" />
   <title>看房记录与对比</title>
   <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
-  <link rel="stylesheet" href="./css/tokens.css?v=20261108sec11" />
-  <link rel="stylesheet" href="./css/ui-kit.css?v=20261108sec11" />
-  <link rel="stylesheet" href="./css/style.css?v=20261108sec11" />
+  <link rel="stylesheet" href="./css/tokens.css?v=v1.5.0" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.5.0" />
+  <link rel="stylesheet" href="./css/style.css?v=v1.5.0" />
   <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
-  <script src="./config.js?v=20261108sec11"></script>
+  <script src="./config.js?v=v1.5.0"></script>
 </head>
 <body>
   <!-- ============ 登录 / 注册（规范登录卡片） ============ -->
@@ -107,13 +111,16 @@
           </span>
           <span class="zy-logo-text"><b>看房记录</b><small>HOUSE VIEW TRACKER</small></span>
         </div>
-        <div class="nav-item active" data-view="list" title="房源列表"><span class="nav-ico">📋</span><span class="nav-label">房源列表</span></div>
+        <div class="nav-item active" data-view="dashboard" title="看房驾驶"><span class="nav-ico">📊</span><span class="nav-label">看房驾驶</span></div>
+        <div class="nav-item" data-view="plan" title="购房计划"><span class="nav-ico">🗓️</span><span class="nav-label">购房计划</span></div>
+        <div class="nav-item" data-view="list" title="房源列表"><span class="nav-ico">📋</span><span class="nav-label">房源列表</span></div>
         <div class="nav-item" data-view="map" title="地图分布"><span class="nav-ico">🗺️</span><span class="nav-label">地图分布</span></div>
         <div class="nav-item" data-view="compare" title="房源对比"><span class="nav-ico">⚖️</span><span class="nav-label">房源对比</span></div>
         <div class="nav-item" data-view="knowledge" title="购房知识"><span class="nav-ico">📚</span><span class="nav-label">购房知识</span></div>
         <div class="nav-item" data-view="mortgage" title="房贷计算"><span class="nav-ico">🧮</span><span class="nav-label">房贷计算</span></div>
         <div class="nav-item" data-view="purchased" title="已购房源"><span class="nav-ico">🏡</span><span class="nav-label">已购房源</span></div>
         <div class="nav-item" data-view="renoList" title="装修列表"><span class="nav-ico">🔨</span><span class="nav-label">装修列表</span></div>
+        <div class="nav-item" data-view="floorplan" title="装修设计"><span class="nav-ico">🧱</span><span class="nav-label">装修设计</span></div>
         <div class="nav-item" data-view="trash" title="回收站"><span class="nav-ico">🗑️</span><span class="nav-label">回收站</span></div>
         <div class="nav-spacer"></div>
         <div class="nav-item" data-view="profile" title="设置"><span class="nav-ico">⚙️</span><span class="nav-label">设置</span></div>
@@ -356,14 +363,37 @@
     </div>
   </div>
 
-  <script src="./js/api.js?v=20261108sec11"></script>
-  <script src="./js/auth.js?v=20261108sec11"></script>
-  <script src="./js/store.js?v=20261108sec11"></script>
-  <script src="./js/knowledge-data.js?v=20261108sec11"></script>
-  <script src="./js/reno-demo.js?v=20261108sec11"></script>
-  <script src="./js/geo.js?v=20261108sec11"></script>
-  <script src="./js/map.js?v=20261108sec11"></script>
-  <script src="./js/app.js?v=20261108sec11"></script>
+  <!-- 详情页媒体查看器：图片 / 视频放大，按所在区块左右切换 -->
+  <div id="media-modal" class="modal hidden" aria-label="媒体预览">
+    <div class="modal-box mm-box">
+      <div class="modal-head mm-head">
+        <span class="t" id="mm-title">媒体预览</span>
+        <span class="mm-count" id="mm-count"></span>
+        <span class="spacer"></span>
+        <button class="modal-x" id="mm-x" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="mm-stage" id="mm-stage">
+        <div id="mm-view"></div>
+        <button class="mm-nav prev" id="mm-prev" type="button" aria-label="上一张">‹</button>
+        <button class="mm-nav next" id="mm-next" type="button" aria-label="下一张">›</button>
+      </div>
+      <div class="mm-hint">← → 切换 · Esc 关闭 · 点击空白处退出</div>
+    </div>
+  </div>
+
+  <script src="./js/api.js?v=v1.5.0"></script>
+  <script src="./js/auth.js?v=v1.5.0"></script>
+  <script src="./js/store.js?v=v1.5.0"></script>
+  <script src="./js/knowledge-data.js?v=v1.5.0"></script>
+  <script src="./js/reno-demo.js?v=v1.5.0"></script>
+  <script src="./js/geo.js?v=v1.5.0"></script>
+  <script src="./js/map.js?v=v1.5.0"></script>
+  <script src="./js/regions.js?v=v1.5.0"></script>
+  <script src="./js/app.js?v=v1.5.0"></script>
+  <!-- 运行监控：设置弹窗里的登录日志 / 模型流量（只读，挂在 window.HvtMonitor） -->
+  <script src="./js/monitor.js?v=v1.5.0"></script>
+  <!-- 装修设计：自研 3D 引擎（ES module，本地 Three.js，异步就绪后派发 floorplan:ready） -->
+  <script type="module" src="./js/floorplan-3d.js?v=v1.5.0"></script>
 
   <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
   <div id="aie-modal" class="modal hidden">

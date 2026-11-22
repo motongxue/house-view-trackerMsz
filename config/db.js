@@ -83,5 +83,10 @@ module.exports = {
     fromName: process.env.SMTP_FROM_NAME || '看房记录工具'
   },
   // 仅本地开发用：不连 SMTP，把验证码打印到服务端控制台以便跑通全流程。生产严禁开启。
-  emailDevLog: String(process.env.EMAIL_DEV_LOG || '') === 'true'
+  emailDevLog: String(process.env.EMAIL_DEV_LOG || '') === 'true',
+  // 邮箱验证码总开关：默认 false（开箱即用，不配 SMTP 也能注册/登录）。
+  // false：注册只过图形验证码，不校验邮箱；无邮箱验证的「验证码登录/找回密码」在前后端都禁用。
+  // true ：走完整邮件验证，且必须配齐 SMTP；未配置时相关操作明确报错，不静默放行。
+  // 主流自托管项目（Supabase 自托管 / Penpot / tanchi）均采用「自托管默认关、公网默认开」。
+  emailVerification: String(process.env.EMAIL_VERIFICATION || '') === 'true'
 };
