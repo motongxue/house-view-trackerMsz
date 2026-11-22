@@ -1004,7 +1004,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.0';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.1';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5191,7 +5191,7 @@
     box.hidden = false;
     box.className = 'pv-update';
     box.innerHTML = '<span class="pv-up-muted">正在检查…</span>';
-    let info = null, latest = '';
+    let info = null, latest = '', backendErr = '';
     try {
       const chk = await Api.get('/api/upgrade/check');
       info = (chk && chk.data) || {};
@@ -5202,6 +5202,8 @@
         return;
       }
     } catch (e) {
+      // 记下真实原因：旧服务端 404 / 非管理员 403 / 服务端拉不到版本文件 502
+      backendErr = (e && e.message) || String(e || '');
       // 后端接口不可用（旧版本服务端 / 非管理员 / 网络问题）→ 退回前端直读公开 version.json
       try {
         const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
@@ -5216,7 +5218,9 @@
           return;
         }
       } catch (e2) {
-        box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(e2.message || e2) + '。请检查网络或 UPDATE_URL 配置。</span>';
+        // 后端和浏览器两条路都失败：把后端真实原因一并显示，避免只看到笼统的失败提示
+        const both = backendErr ? ('服务端：' + backendErr + '；浏览器：' + (e2.message || e2)) : (e2.message || e2);
+        box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(both) + '。请检查网络或 UPDATE_URL 配置。</span>';
         return;
       }
     }
@@ -5246,7 +5250,14 @@
         'tar -xzf /tmp/' + pkg + ' --strip-components=1',
         'sudo systemctl restart house-view-tracker'
       ].join('\n');
-      box.innerHTML = manualUpgradeCard(info, latest, '当前账号不是管理员，或服务端尚未开启一键升级');
+      // 提示语按真实原因区分：把「服务端拉不到版本文件」和「不是管理员」分开说，
+      // 否则用户会以为是自己权限没配好，实际是服务器网络/取版本文件失败。
+      const tip = backendErr
+        ? (/管理员/.test(backendErr)
+            ? '当前账号不是管理员（仅 ADMIN_EMAILS 里的账号可一键升级）'
+            : '服务端检查更新失败：' + backendErr + '（以下为手动升级命令）')
+        : '当前账号不是管理员，或服务端尚未开启一键升级';
+      box.innerHTML = manualUpgradeCard(info, latest, tip);
       bindCopy(box, cmd);
     }
   }

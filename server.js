@@ -1562,7 +1562,15 @@ async function handleApi(req, res, url) {
           notes: remote.notes || '', date: remote.date || '', package: remote.package || '',
           admin: true, platform: process.platform
         } });
-      } catch (e) { return sendJSON(res, 502, { error: '读取版本文件失败：' + e.message }); }
+      } catch (e) {
+        // 把底层原因（超时 / ENETUNREACH / 证书等）显式带出来：否则前端只能显示笼统的 502，
+        // 排查「服务器明明能上 GitHub，一键升级却报错」时完全没线索。
+        const why = e.name === 'AbortError'
+          ? '请求超时（20 秒无响应）'
+          : ((e.cause && (e.cause.code || e.cause.message)) || e.message || String(e));
+        console.warn('[upgrade] 检查更新失败：' + why + ' | URL: ' + updateUrl());
+        return sendJSON(res, 502, { error: '读取版本文件失败：' + why });
+      }
     }
 
     if (pathname === '/api/upgrade/start' && method === 'POST') {

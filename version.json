@@ -1,15 +1,20 @@
 {
-  "version": "v1.8.0",
+  "version": "v1.8.1",
   "date": "2026-11-22",
-  "notes": "新增历史成交价：房源详情页加「历史成交价」按钮，按小区聚合展示成交记录（户型/面积/楼层/成交总价/单价/挂牌价/成交日期/周期/成交人），支持手动增删改，并为采集插件预留批量导入接口。",
-  "package": "house-view-tracker-linux-x64_v1.8.0.tar.gz",
+  "notes": "修复「检查更新 502」看不出原因的问题：现在会把服务端真实错误（超时/连不上/证书等）直接显示在关于页，而不是笼统提示「不是管理员」；同时后端日志打印失败原因，便于排查。",
+  "package": "house-view-tracker-linux-x64_v1.8.1.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.0/house-view-tracker-linux-x64_v1.8.0.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.0/house-view-tracker-linux-x64_v1.8.0.tar.gz"
+    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.1/house-view-tracker-linux-x64_v1.8.1.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.1/house-view-tracker-linux-x64_v1.8.1.tar.gz"
   ],
   "downloadUrl": "",
-  "installDir": "/data/house-view-tracker",
+  "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.1",
+      "date": "2026-11-22",
+      "notes": "修复「检查更新」失败时不显示原因：后端把底层错误码（超时 / ENETUNREACH / 证书等）一并返回，关于页直接展示；日志同步打印失败原因。手动升级命令的默认安装目录改为 /opt/house-view-tracker。"
+    },
     {
       "version": "v1.8.0",
       "date": "2026-11-22",
