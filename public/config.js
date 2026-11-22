@@ -22,5 +22,6 @@ window.APP_CONFIG = {
   // 留空 = 「检查更新」按钮会提示未配置。只读取公开版本信息，不上传任何账号/房源数据。
   // Gitee 示例：https://gitee.com/你的账号/house-view-tracker/raw/main/version.json
   // GitHub 示例：https://raw.githubusercontent.com/你的账号/house-view-tracker/main/version.json
-  UPDATE_URL: ''
+  // 已配置：仓库 motongxue/house-view-trackerMsz 的 version.json（同时供检查更新与关于页时间轴读取）
+  UPDATE_URL: 'https://raw.githubusercontent.com/motongxue/house-view-trackerMsz/main/version.json'
 };

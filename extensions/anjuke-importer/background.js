@@ -43,7 +43,7 @@ async function ensureSchema() {
       schema = Array.isArray(cached) ? { csvCols: cached } : cached;
     }
     if (!schema || !Array.isArray(schema.csvCols) || !schema.csvCols.length) {
-      throw new Error('读不到系统字段清单，请先启动看房记录系统并打开一次页面');
+      throw new Error('读不到系统字段清单，请先启动云庐系统并打开一次页面');
     }
     MAP.configure(schema);
     return schema.csvCols;
@@ -287,7 +287,7 @@ async function handle(msg, sender, sendResponse) {
       const cfg = await getCfg();
       const base = String(msg.base || cfg.base || DEFAULT_BASE).replace(/\/+$/, '');
       const token = msg.token || cfg.token;
-      if (!token) return sendResponse({ ok: false, error: '还没有系统登录态：请先打开一次看房记录系统页面，或在插件面板里手动填 token' });
+      if (!token) return sendResponse({ ok: false, error: '还没有系统登录态：请先打开一次云庐系统页面，或在插件面板里手动填 token' });
       const p = await buildPayload();
       if (!p.hasMain) return sendResponse({ ok: false, error: '还没有采到房源数据' });
       let res;

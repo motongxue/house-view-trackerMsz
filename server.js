@@ -1,5 +1,5 @@
 // ============================================================
-// 看房记录工具 —— 本地后端服务
+// 云庐 —— 本地后端服务
 // 职责：
 //   1) 托管 public/ 下的前端静态文件
 //   2) 提供 REST 接口（认证 + 房源 CRUD），数据库用本地 PostgreSQL
@@ -694,7 +694,7 @@ async function consumeEmailCode(email, purpose, code) {
 }
 function emailCodeMailHtml(label, code) {
   return `<div style="font-family:Microsoft YaHei,Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#243044">
-    <h2 style="margin:0 0 16px;font-size:20px">看房记录工具 · 邮箱验证码</h2>
+    <h2 style="margin:0 0 16px;font-size:20px">云庐 · 邮箱验证码</h2>
     <p style="font-size:14px;line-height:1.8">你正在进行「${label}」操作，本次验证码是：</p>
     <div style="font-size:34px;font-weight:700;letter-spacing:8px;color:#1d4ed8;background:#eef4ff;padding:16px 20px;border-radius:10px;text-align:center;margin:18px 0">${code}</div>
     <p style="font-size:13px;color:#667085;line-height:1.8">验证码 10 分钟内有效，且只能使用一次。<br/>若不是你本人操作，请忽略本邮件，并建议尽快修改账号密码。</p>
@@ -1237,7 +1237,7 @@ async function handleApi(req, res, url) {
     try { code = await issueEmailCode(email, purpose); }
     catch (e) { console.error('[MAIL] 签发验证码失败', e); return sendJSON(res, 500, { error: '验证码生成失败，请稍后重试' }); }
     try {
-      await sendMail(email, `【看房记录】${EMAIL_PURPOSE_LABEL[purpose]}验证码`, emailCodeMailHtml(EMAIL_PURPOSE_LABEL[purpose], code));
+      await sendMail(email, `【云庐】${EMAIL_PURPOSE_LABEL[purpose]}验证码`, emailCodeMailHtml(EMAIL_PURPOSE_LABEL[purpose], code));
       if (EMAIL_DEV_LOG && !smtpConfigured()) {
         console.log(`[MAIL][DEV] ${EMAIL_PURPOSE_LABEL[purpose]}验证码 ${code} → ${email}（仅开发模式，生产严禁开启 EMAIL_DEV_LOG）`);
       }
@@ -2203,7 +2203,7 @@ async function start() {
     if (EMBEDDED_DB) process.exit(1);
   }
   server.listen(PORT, () => {
-    console.log(`看房记录工具已启动： http://127.0.0.1:${PORT}/  （浏览器打开 http://服务器IP:${PORT}/）`);
+    console.log(`云庐已启动： http://127.0.0.1:${PORT}/  （浏览器打开 http://服务器IP:${PORT}/）`);
     console.log(EMBEDDED_DB
       ? `（数据保存在目录 ${require('./config/db-embedded').embeddedDataDir()}，备份时整个目录拷走即可）`
       : `（数据保存在本地 PostgreSQL：house_view 库，不联网、不上传）`);

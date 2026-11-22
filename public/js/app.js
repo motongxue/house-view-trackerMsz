@@ -809,7 +809,7 @@
     const el = $('hv-page-name');
     if (!el) return;
     if (name === 'form') { el.textContent = state.editing ? '编辑房源' : '录入房源'; return; }
-    el.textContent = VIEW_TITLES[name] || '看房记录';
+    el.textContent = VIEW_TITLES[name] || '云庐';
   }
   function loadSavedView() {
     try {
@@ -998,7 +998,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.5.0';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.0';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -1432,7 +1432,7 @@
     const orientations = all.map((p) => (p.attributes && p.attributes.orientation) || '');
     const floors = all.map((p) => (p.attributes && p.attributes.floor) || '');
     const pickCount = state.pickMode === 'compare' ? state.selected.size : state.batchSel.size;
-    const head = crumb(['看房记录', '房源列表']) + `<div class="section-head"><h2>已记录房源（${all.length}${shown.length !== all.length ? '，筛选后 ' + shown.length : ''}）</h2>
+    const head = crumb(['云庐', '房源列表']) + `<div class="section-head"><h2>已记录房源（${all.length}${shown.length !== all.length ? '，筛选后 ' + shown.length : ''}）</h2>
       <div class="spacer"></div>
       <span class="dd">
         <button class="btn primary" id="add-new">+ 录入</button>
@@ -2551,7 +2551,7 @@
     c.innerHTML = '<div class="empty">加载中…</div>';
     let list;
     try { list = await Store.trash(); } catch (e) { c.innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>'; return; }
-    const head = crumb(['看房记录', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div>${viewModeBtn('trash-view-mode')}<button class="btn" id="trash-back">返回列表</button></div>`;
+    const head = crumb(['云庐', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div>${viewModeBtn('trash-view-mode')}<button class="btn" id="trash-back">返回列表</button></div>`;
     const bindCommon = () => {
       watchCardsCenter();
       const t = document.getElementById('trash-back'); if (t) t.onclick = () => setView('list');
@@ -2784,7 +2784,7 @@
   function doExportCsv() {
     const list = state.properties;
     if (!list.length) { toast('没有可导出的数据'); return; }
-    downloadCsv('看房记录_' + new Date().toISOString().slice(0, 10) + '.csv', toCsv(list));
+    downloadCsv('云庐_' + new Date().toISOString().slice(0, 10) + '.csv', toCsv(list));
     toast('已导出 ' + list.length + ' 条 CSV', true);
   }
 
@@ -2803,7 +2803,7 @@
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = '看房记录_完整数据_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.download = '云庐_完整数据_' + new Date().toISOString().slice(0, 10) + '.json';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast('已导出 ' + list.length + ' 条完整数据（JSON）', true);
@@ -2963,7 +2963,7 @@
     // 未启用 / 未配置 Key：不尝试加载在线地图，直接给出引导 + 一键进设置
     if (!mapEnabled() || !Geo.hasKey()) {
       const off = !mapEnabled();
-      c.innerHTML = crumb(['看房记录', '地图分布']) +
+      c.innerHTML = crumb(['云庐', '地图分布']) +
         '<div class="section-head"><h2>地图分布</h2></div>' +
         '<div class="map-guide">' +
           '<div class="mg-ico">' + (off ? '🗺️' : '🔑') + '</div>' +
@@ -2980,7 +2980,7 @@
     }
     const dest = state.commuteDest;
     c.innerHTML = `
-      ${crumb(['看房记录', '地图分布'])}
+      ${crumb(['云庐', '地图分布'])}
       <div class="section-head"><h2>地图分布</h2><div class="spacer"></div>
         <span class="muted">共 ${state.properties.length} 套，已定位 ${state.properties.filter((p) => p.geo && p.geo.lng).length} 套</span>
       </div>
@@ -3093,7 +3093,7 @@
     if (state.compareTab === 'renovation') { renderRenoCompare(c, tabs, bindCTabs); return; }
     const items = state.properties.filter((p) => state.selected.has(p.id));
     if (items.length < 2) {
-      c.innerHTML = crumb(['看房记录', '房源对比']) + tabs + `<div class="cmp-empty">
+      c.innerHTML = crumb(['云庐', '房源对比']) + tabs + `<div class="cmp-empty">
         <div class="cmp-empty-ico">⚖️</div>
         <h3>还没有可对比的房源</h3>
         <p>请在房源列表里勾选至少 2 套房源，再回来查看横向对比。</p>
@@ -3137,7 +3137,7 @@
       ['配套备注', (p) => (p.facilities && p.facilities.notes) || '—'],
       ['备注', (p) => p.notes || '—']
     ];
-    let html = crumb(['看房记录', '房源对比']) + tabs + '<div class="section-head"><h2>房源对比（' + items.length + '）</h2><div class="spacer"></div>' +
+    let html = crumb(['云庐', '房源对比']) + tabs + '<div class="section-head"><h2>房源对比（' + items.length + '）</h2><div class="spacer"></div>' +
       '<button class="btn" id="cmp-clear">清空选择</button></div><div style="overflow:auto"><table class="cmp-table"><thead><tr><th>字段</th>';
     items.forEach((p) => { html += '<th>' + esc(p.title || (p.location && p.location.community) || '未命名') + '</th>'; });
     html += '</tr></thead><tbody>';
@@ -3159,7 +3159,7 @@
     const rowsAll = renoRowsOf();
     const sel = rowsAll.filter((r) => state.renoCompareSel.has(renoKey(r)));
     if (sel.length < 2) {
-      c.innerHTML = crumb(['看房记录', '房源对比']) + tabs + `<div class="cmp-empty">
+      c.innerHTML = crumb(['云庐', '房源对比']) + tabs + `<div class="cmp-empty">
         <div class="cmp-empty-ico">🔨</div>
         <h3>还没有可对比的装修方案</h3>
         <p>请到「装修列表」勾选至少 2 条报价方案，再点「对比选中」。</p>
@@ -3212,7 +3212,7 @@
       ['图片附件', (it) => RENO_MEDIA_META.reduce((s, mm) => s + ((it.media && it.media[mm.k]) || []).length, 0) + ' 张'],
       ['踩坑备忘', (it) => cell(it.notes)]
     ];
-    let html = crumb(['看房记录', '房源对比']) + tabs +
+    let html = crumb(['云庐', '房源对比']) + tabs +
       `<div class="section-head"><h2>装修对比（${sel.length}）</h2><div class="spacer"></div>
         <button class="btn" id="rc-clear">清空选择</button>
         <button class="btn" id="rc-back">返回装修列表</button></div>
@@ -3254,7 +3254,7 @@
 
     c.innerHTML = `
       <div class="section-head">
-        ${crumb(['看房记录', id ? '编辑房源' : '录入房源'])}
+        ${crumb(['云庐', id ? '编辑房源' : '录入房源'])}
         <div class="spacer"></div><button class="btn" id="back-list">返回列表</button></div>
       ${!Geo.hasKey() ? '<div class="warn">提示：当前未配置高德 Key，地图与自动定位不可用；你仍可填写其余字段，位置稍后在配置了 Key 后补，或用下方“点击地图补点”（需 Key）。</div>' : ''}
       <div class="form-layout">
@@ -4494,7 +4494,7 @@
         <button class="btn primary" id="d-reno-edit">✏️ 编辑装修信息</button>
       </span>` : '';
     c.innerHTML = `
-      ${crumb(['看房记录', '房源详情'])}
+      ${crumb(['云庐', '房源详情'])}
       <div class="section-head"><h2>${esc(p.title || loc.community || '房源详情')}</h2>
         ${detailTabs}
         ${bought ? '' : `<div class="detail-status">${stChip}</div>`}
@@ -4957,6 +4957,52 @@
       box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(e.message || e) + '。请检查 UPDATE_URL 是否正确、文件是否公开可访问。</span>';
     }
   }
+  // 关于页「版本更新记录」：从 version.json 的 changelog 读取，纵向时间轴渲染（新→旧）。
+  // 与检查更新共用 UPDATE_URL；缓存一份避免每次切组都重复请求。
+  let _changelogCache = null;
+  async function loadChangelog(force) {
+    const box = $('about-timeline');
+    if (!box) return;
+    const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
+    if (!url) {
+      box.innerHTML = '<div class="cl-empty">未配置更新地址：在部署目录 config.js 填 UPDATE_URL 后即可显示版本更新记录。</div>';
+      return;
+    }
+    const render = (list) => {
+      if (!Array.isArray(list) || !list.length) {
+        box.innerHTML = '<div class="cl-empty">暂无更新记录。</div>';
+        return;
+      }
+      // 按版本号语义化从新到旧排序，第一条标「最新」
+      const sorted = list.slice().sort((a, b) => cmpVersion(b.version, a.version));
+      box.innerHTML = sorted.map((it, i) => {
+        const isLatest = i === 0;
+        const ver = String(it.version || '').trim();
+        const date = String(it.date || '').trim();
+        const notes = String(it.notes || '').trim();
+        return '<div class="cl-item' + (isLatest ? ' is-latest' : '') + '">' +
+          '<div class="cl-head">' +
+            '<span class="cl-ver">' + esc(ver) + '</span>' +
+            (isLatest ? '<span class="cl-tag">当前版本</span>' : '') +
+            (date ? '<span class="cl-date">' + esc(date) + '</span>' : '') +
+          '</div>' +
+          (notes ? '<p class="cl-notes">' + esc(notes) + '</p>' : '') +
+        '</div>';
+      }).join('');
+    };
+    if (_changelogCache && !force) { render(_changelogCache); return; }
+    box.innerHTML = '<div class="cl-loading">正在加载更新记录…</div>';
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const info = await r.json();
+      const list = Array.isArray(info.changelog) ? info.changelog : [];
+      _changelogCache = list;
+      render(list);
+    } catch (e) {
+      box.innerHTML = '<div class="cl-err">更新记录加载失败：' + esc(e.message || e) + '。请检查 UPDATE_URL 或稍后重试。</div>';
+    }
+  }
   // ---------- 设置页改为弹窗显示（点击「设置」菜单直接弹窗，而非整页切换） ----------
   function openSettingsModal(group) {
     if (group) settingsCurrentGroup = group;
@@ -4996,7 +5042,7 @@
     const dm = u.demand || {};
     const bv = buildInfo();
     c.innerHTML =
-      crumb(['看房记录', '设置']) +
+      crumb(['云庐', '设置']) +
       // 布局：左侧分类导航 + 右侧内容卡片。只切换显示，不改字段 / 文案 / 保存行为。
       '<div class="settings-layout" id="settings-layout">' +
         '<aside class="settings-sidebar">' +
@@ -5175,13 +5221,34 @@
       '</div>' +
             '</section>' +
             '<section class="settings-panel" data-panel="about" hidden>' +
+      // 系统介绍：云庐是什么、能做什么、数据存在哪
+      '<div class="about-intro">' +
+        '<div class="ai-hero"><span class="ai-mark">🏠</span>' +
+          '<div class="ai-title"><b>云庐</b><small>YUNLU · 一站式看房决策工具</small></div>' +
+        '</div>' +
+        '<p class="ai-lead">从看房记录到购房决策，再到装修落地——把散落在记忆和聊天记录里的房源信息，收进一个只属于你自己的系统。</p>' +
+        '<div class="ai-feats">' +
+          '<div class="ai-feat"><span>📋</span><b>房源全记录</b><small>价格户型面积、图片户型图 VR、周边配套，一套不落</small></div>' +
+          '<div class="ai-feat"><span>⚖️</span><b>横向对比</b><small>多套房源打分对比，优劣一眼看清</small></div>' +
+          '<div class="ai-feat"><span>🗺️</span><b>地图标注</b><small>房源位置与通勤一目了然，购房倒计时随时提醒</small></div>' +
+          '<div class="ai-feat"><span>🧮</span><b>房贷测算</b><small>月供明细、提前还款、购房计划一手掌握</small></div>' +
+          '<div class="ai-feat"><span>🧱</span><b>装修设计</b><small>户型识别、3D 设计、家具布置，从图纸到落地</small></div>' +
+          '<div class="ai-feat"><span>🔒</span><b>数据自主</b><small>本地部署、按账号隔离，你的数据只你自己可见</small></div>' +
+        '</div>' +
+        '<p class="ai-foot">技术栈：Node.js + PostgreSQL（本地内嵌）· 纯前端交互 · 数据不上传第三方</p>' +
+      '</div>' +
       // 版本信息：独立分组，不参与其它分组的排布
       '<div class="profile-version">' +
         '<span class="pv-mark">🏠</span>' +
-        '<div class="pv-main"><b>看房记录与对比</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
+        '<div class="pv-main"><b>云庐</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
         '<div class="pv-meta"><span>版本 <b>' + esc(bv.tag) + '</b></span><span>构建于 ' + esc(bv.date) + '</span>' +
           '<button type="button" class="btn pv-up-btn" id="pv-check-update" title="检查是否有新版本">检查更新</button></div>' +
         '<div class="pv-update" id="pv-update" hidden></div>' +
+      '</div>' +
+      // 版本更新记录：纵向时间轴，内容来自 version.json 的 changelog
+      '<div class="about-changelog">' +
+        '<h4 class="cl-title">版本更新记录</h4>' +
+        '<div id="about-timeline" class="cl-timeline"><div class="cl-loading">正在加载更新记录…</div></div>' +
       '</div>' +
             '</section>' +
             // 运行监控：只读面板，内容由 js/monitor.js 异步填充（首次切到该组才加载数据）
@@ -5210,6 +5277,8 @@
       if (g.id === 'monitor' && window.HvtMonitor) {
         window.HvtMonitor.mount($('hvt-monitor-root'));
       }
+      // 关于页：异步加载版本更新记录时间轴（失败不影响其它功能）
+      if (g.id === 'about') { try { loadChangelog(); } catch (_) {} }
     };
     settingsNavItems.forEach((b) => b.onclick = () => showSettingsGroup(b.dataset.group));
     showSettingsGroup(settingsCurrentGroup);

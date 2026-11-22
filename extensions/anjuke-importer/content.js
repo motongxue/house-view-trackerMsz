@@ -69,7 +69,7 @@
     var closeBtn = btn('×', '', function () { p.remove(); });
     closeBtn.classList.add('hvt-close');
     p.appendChild(closeBtn);
-    p.appendChild(el('div', 'hvt-title', '看房记录 · 房源采集'));
+    p.appendChild(el('div', 'hvt-title', '云庐 · 房源采集'));
     var sub = el('div', 'hvt-sub', rule.name + ' · ' + (rule.twoPages && pageType === 'params' ? '详细信息页' : '房源详情页') + ' · 正在读取…');
     var stat = el('div', 'hvt-stat', '');
     var tip = el('div', 'hvt-tip', '');
