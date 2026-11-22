@@ -843,6 +843,9 @@
     // 先撤掉 index.html 内联脚本打的 boot-app 类：它只是「JS 加载完之前的临时遮挡策略」，
     // 撤掉后 #app-view 的显隐重新由 .hidden 控制，退出登录才能正常回到登录页。
     document.documentElement.classList.remove('boot-app');
+    // v1.8.8：boot-dark 同理，只是骨架期的提前上色；真实主题由 body.dark / hd-* 接管，
+    // 不撤掉的话选了浅色主题的账号会一直被 html 上的深色变量压住。
+    document.documentElement.classList.remove('boot-dark');
     const bl = $('boot-loading');
     if (bl) bl.remove();
   }
@@ -1020,7 +1023,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.7';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.8';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');

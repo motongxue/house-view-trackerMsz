@@ -1,15 +1,20 @@
 {
-  "version": "v1.8.7",
+  "version": "v1.8.8",
   "date": "2026-11-22",
-  "notes": "「版本更新记录」改为读服务器本地的版本文件，页头版本号与时间轴统一以本机实际运行的版本为准；不再被远程仓库/CDN 缓存里的旧版本带偏。",
-  "package": "house-view-tracker-linux-x64_v1.8.7.tar.gz",
+  "notes": "修复刷新页面时顶部栏先闪一下浅绿色：骨架期顶栏底色改成默认白，深色主题用户也按保存的配色提前上色，不再等脚本跑完才纠正。",
+  "package": "house-view-tracker-linux-x64_v1.8.8.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.7/house-view-tracker-linux-x64_v1.8.7.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.7/house-view-tracker-linux-x64_v1.8.7.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.8/house-view-tracker-linux-x64_v1.8.8.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.8/house-view-tracker-linux-x64_v1.8.8.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.8",
+      "date": "2026-11-22",
+      "notes": "修复「刷新页面顶部栏变浅绿色」：顶栏基础样式误用了 tokens 里的浅青底色（#CBFDF8），而配色类 hd-* 要等脚本跑起来才挂上，于是每次刷新都先闪一帧浅绿。现在基础底色与默认主题一致（白），选深色主题的账号也会在页面加载前就按保存的配色上色，不再闪浅色。"
+    },
     {
       "version": "v1.8.7",
       "date": "2026-11-22",

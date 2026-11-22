@@ -201,7 +201,9 @@ body.dark .sidebar-logout:hover { background: rgba(205,24,1,.18); }
 
 /* ---------- 顶部栏：多套配色主题（左→右） ---------- */
 .zy-header {
-  background: var(--aux-cyan-09);
+  /* v1.8.8：底色必须与默认主题 hd-1 一致（白）。原来这里是 tokens 的 --aux-cyan-09
+     （#CBFDF8 浅青），而 hd-* 类要等 app.js 跑起来才挂上，于是每次刷新都会先闪一下浅绿顶栏。 */
+  background: var(--white);
   border-bottom: 1px solid var(--border);
 }
 /* 极浅（默认）：纯白顶部栏 + 与内容区左缘对齐 */
@@ -837,6 +839,20 @@ body.dark .utabs .tab.active { color: var(--primary); border-bottom-color: var(-
 html.boot-app #boot-loading { display: none !important; }
 html.boot-app #auth-view { display: none !important; }
 html.boot-app #app-view.hidden { display: flex !important; }
+/* v1.8.8：选了深色顶部栏（hd-6 / hd-auto 且系统深色）的用户，刷新时也别先闪一帧浅色骨架。
+   html.boot-dark 由 index.html 内联脚本按 localStorage 的 hvt_header_theme 提前打上，
+   app.js 启动收尾时（dismissBootLoading）会撤掉它，把控制权交回 body.dark / hd-* 类。 */
+html.boot-dark {
+  --bg: #14161c; --panel: #1d212b; --panel-2: #242936; --white: #1d212b;
+  --text: #e8eaee; --text-1: #e8eaee; --text-2: #c3c8d4; --text-3: #8b93a7;
+  --muted: #8b93a7; --disabled: #566074;
+  --border: #2a3040; --border-strong: #3a4152;
+  --line: #2a3040; --line-strong: #3a4152;
+  background: #14161c; color: var(--text-2);
+}
+/* 深色主题跑起来后顶栏用的是 #171b24（见下方 body.dark .zy-header.hd-6），
+   骨架期保持一致，避免「先 #1d212b 再变 #171b24」这种一闪。 */
+html.boot-dark .zy-header { background: #171b24; }
 .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--primary) 0%, var(--aux-cyan) 100%); padding: 24px; }
 .auth-card { width: 900px; max-width: 96vw; display: flex; background: var(--panel); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow-3-lg); }
 

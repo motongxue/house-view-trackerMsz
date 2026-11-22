@@ -9,17 +9,27 @@
   <meta name="referrer" content="no-referrer" />
   <title>择隅 · 看房记录与对比</title>
   <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
-  <link rel="stylesheet" href="./css/tokens.css?v=v1.8.7" />
-  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.8.7" />
-  <link rel="stylesheet" href="./css/style.css?v=v1.8.7" />
+  <link rel="stylesheet" href="./css/tokens.css?v=v1.8.8" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.8.8" />
+  <link rel="stylesheet" href="./css/style.css?v=v1.8.8" />
   <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
-  <script src="./config.js?v=v1.8.7"></script>
+  <script src="./config.js?v=v1.8.8"></script>
   <!-- 2) 本地已有登录态 → 刷新直接上应用骨架，不铺整屏启动遮罩（避免大蓝屏闪一下）；
        无登录态仍保留遮罩，否则会先闪登录页再跳转。boot 判断完由 app.js 移除该类。
        必须内联在本处：放到 app.js 里就已经晚了，遮罩早就画出来了。 -->
   <script>
     try {
       if (sessionStorage.getItem('hvt_token')) document.documentElement.classList.add('boot-app');
+    } catch (e) {}
+    // v1.8.8：顶部栏配色别等 app.js —— 它没跑起来之前 .zy-header 还没有 hd-* 类，
+    // 默认底色会把白顶栏画成浅青（--aux-cyan-09），刷新瞬间看起来像「顶栏变浅绿」。
+    // 这里按用户保存的 hvt_header_theme 提前打 boot-dark（深色）/ 什么都不打（默认白）。
+    try {
+      var _th = localStorage.getItem('hvt_header_theme') || 'hd-1';
+      var _dm = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (_th === 'hd-6' || (_th === 'hd-auto' && _dm)) {
+        document.documentElement.classList.add('boot-dark');
+      }
     } catch (e) {}
   </script>
 </head>
@@ -391,19 +401,19 @@
     </div>
   </div>
 
-  <script src="./js/api.js?v=v1.8.7"></script>
-  <script src="./js/auth.js?v=v1.8.7"></script>
-  <script src="./js/store.js?v=v1.8.7"></script>
-  <script src="./js/knowledge-data.js?v=v1.8.7"></script>
-  <script src="./js/reno-demo.js?v=v1.8.7"></script>
-  <script src="./js/geo.js?v=v1.8.7"></script>
-  <script src="./js/map.js?v=v1.8.7"></script>
-  <script src="./js/regions.js?v=v1.8.7"></script>
-  <script src="./js/app.js?v=v1.8.7"></script>
+  <script src="./js/api.js?v=v1.8.8"></script>
+  <script src="./js/auth.js?v=v1.8.8"></script>
+  <script src="./js/store.js?v=v1.8.8"></script>
+  <script src="./js/knowledge-data.js?v=v1.8.8"></script>
+  <script src="./js/reno-demo.js?v=v1.8.8"></script>
+  <script src="./js/geo.js?v=v1.8.8"></script>
+  <script src="./js/map.js?v=v1.8.8"></script>
+  <script src="./js/regions.js?v=v1.8.8"></script>
+  <script src="./js/app.js?v=v1.8.8"></script>
   <!-- 运行监控：设置弹窗里的登录日志 / 模型流量（只读，挂在 window.HvtMonitor） -->
-  <script src="./js/monitor.js?v=v1.8.7"></script>
+  <script src="./js/monitor.js?v=v1.8.8"></script>
   <!-- 装修设计：自研 3D 引擎（ES module，本地 Three.js，异步就绪后派发 floorplan:ready） -->
-  <script type="module" src="./js/floorplan-3d.js?v=v1.8.7"></script>
+  <script type="module" src="./js/floorplan-3d.js?v=v1.8.8"></script>
 
   <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
   <div id="aie-modal" class="modal hidden">
