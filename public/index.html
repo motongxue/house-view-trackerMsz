@@ -9,11 +9,11 @@
   <meta name="referrer" content="no-referrer" />
   <title>择隅 · 看房记录与对比</title>
   <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
-  <link rel="stylesheet" href="./css/tokens.css?v=v1.7.0" />
-  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.7.0" />
-  <link rel="stylesheet" href="./css/style.css?v=v1.7.0" />
+  <link rel="stylesheet" href="./css/tokens.css?v=v1.8.0" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.8.0" />
+  <link rel="stylesheet" href="./css/style.css?v=v1.8.0" />
   <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
-  <script src="./config.js?v=v1.7.0"></script>
+  <script src="./config.js?v=v1.8.0"></script>
 </head>
 <body>
   <!-- 启动遮罩：boot 判断登录态前先盖住，避免刷新先闪登录页再跳主界面 -->
@@ -383,19 +383,19 @@
     </div>
   </div>
 
-  <script src="./js/api.js?v=v1.7.0"></script>
-  <script src="./js/auth.js?v=v1.7.0"></script>
-  <script src="./js/store.js?v=v1.7.0"></script>
-  <script src="./js/knowledge-data.js?v=v1.7.0"></script>
-  <script src="./js/reno-demo.js?v=v1.7.0"></script>
-  <script src="./js/geo.js?v=v1.7.0"></script>
-  <script src="./js/map.js?v=v1.7.0"></script>
-  <script src="./js/regions.js?v=v1.7.0"></script>
-  <script src="./js/app.js?v=v1.7.0"></script>
+  <script src="./js/api.js?v=v1.8.0"></script>
+  <script src="./js/auth.js?v=v1.8.0"></script>
+  <script src="./js/store.js?v=v1.8.0"></script>
+  <script src="./js/knowledge-data.js?v=v1.8.0"></script>
+  <script src="./js/reno-demo.js?v=v1.8.0"></script>
+  <script src="./js/geo.js?v=v1.8.0"></script>
+  <script src="./js/map.js?v=v1.8.0"></script>
+  <script src="./js/regions.js?v=v1.8.0"></script>
+  <script src="./js/app.js?v=v1.8.0"></script>
   <!-- 运行监控：设置弹窗里的登录日志 / 模型流量（只读，挂在 window.HvtMonitor） -->
-  <script src="./js/monitor.js?v=v1.7.0"></script>
+  <script src="./js/monitor.js?v=v1.8.0"></script>
   <!-- 装修设计：自研 3D 引擎（ES module，本地 Three.js，异步就绪后派发 floorplan:ready） -->
-  <script type="module" src="./js/floorplan-3d.js?v=v1.7.0"></script>
+  <script type="module" src="./js/floorplan-3d.js?v=v1.8.0"></script>
 
   <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
   <div id="aie-modal" class="modal hidden">

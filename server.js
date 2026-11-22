@@ -384,6 +384,28 @@ async function ensureSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS property_followups_pid_idx ON property_followups(property_id);`);
+  // 历史成交价：按小区聚合的成交记录（按账号隔离，插件/手动录入共用一条一条存）
+  // 一条 = 一次成交；按 (owner, city, district, community) 聚合查询，方便同小区多套房源共享比价数据。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS community_deals (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      city text NOT NULL DEFAULT '',
+      district text NOT NULL DEFAULT '',
+      community text NOT NULL,
+      layout text NOT NULL DEFAULT '',
+      area numeric,
+      floor text NOT NULL DEFAULT '',
+      total_price numeric,
+      unit_price numeric,
+      list_price numeric,
+      deal_date date,
+      deal_cycle text NOT NULL DEFAULT '',
+      agent text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS community_deals_lookup_idx ON community_deals(owner_id, city, district, community);`);
   // 购房知识：用户上传的资料（按账号隔离，系统内置知识走前端静态数据、全账号共享）
   await pool.query(`
     CREATE TABLE IF NOT EXISTS knowledge_files (
@@ -1795,6 +1817,110 @@ async function handleApi(req, res, url) {
     const r = await pool.query('DELETE FROM property_followups WHERE id=$1 AND property_id=$2 AND owner_id=$3', [fupd[2], fupd[1], uid]);
     if (!r.rowCount) return sendJSON(res, 404, { error: '未找到该记录或无权限' });
     return sendJSON(res, 200, { data: { ok: true } });
+  }
+
+  // ---------- 历史成交价：按小区聚合的成交记录（按账号隔离） ----------
+  // date 列用 to_char 转成纯 YYYY-MM-DD 字符串返回：node-pg 默认把 date 解析成本地时区 Date，
+  // 东八区会出现 2026-11-05 → 2026-11-04T16:00Z，前端 slice(0,10) 显示错一天。
+  const DEAL_COLS = `id, owner_id, city, district, community, layout, area, floor,
+    total_price, unit_price, list_price, to_char(deal_date,'YYYY-MM-DD') AS deal_date,
+    deal_cycle, agent, created_at`;
+  if (pathname === '/api/community-deals' && method === 'GET') {
+    const community = String(url.searchParams.get('community') || '').trim();
+    const city = String(url.searchParams.get('city') || '').trim();
+    const district = String(url.searchParams.get('district') || '').trim();
+    if (community) {
+      const r = await pool.query(
+        `SELECT ${DEAL_COLS} FROM community_deals
+          WHERE owner_id=$1 AND community=$2 AND city=$3 AND district=$4
+          ORDER BY COALESCE(deal_date, created_at::date) DESC, created_at DESC`,
+        [uid, community, city, district]
+      );
+      return sendJSON(res, 200, { data: r.rows });
+    }
+    // 不带 community：返回全部（用于小区下拉 / 统计）
+    const r = await pool.query(
+      `SELECT ${DEAL_COLS} FROM community_deals WHERE owner_id=$1 ORDER BY COALESCE(deal_date, created_at::date) DESC, created_at DESC LIMIT 2000`,
+      [uid]
+    );
+    return sendJSON(res, 200, { data: r.rows });
+  }
+  // 数值字段：空串/非数字 → null；日期：空串 → null
+  const dealNum = (v) => { const n = Number(String(v == null ? '' : v).replace(/,/g, '').replace(/[^\d.\-]/g, '')); return Number.isFinite(n) && String(v).trim() !== '' ? n : null; };
+  const dealDate = (v) => { const s = String(v || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+  const dealFields = (b) => ({
+    city: String(b.city || '').trim().slice(0, 40),
+    district: String(b.district || '').trim().slice(0, 40),
+    community: String(b.community || '').trim().slice(0, 120),
+    layout: String(b.layout || '').trim().slice(0, 40),
+    area: dealNum(b.area), floor: String(b.floor || '').trim().slice(0, 40),
+    total_price: dealNum(b.totalPrice), unit_price: dealNum(b.unitPrice), list_price: dealNum(b.listPrice),
+    deal_date: dealDate(b.dealDate), deal_cycle: String(b.dealCycle || '').trim().slice(0, 40),
+    agent: String(b.agent || '').trim().slice(0, 40)
+  });
+  if (pathname === '/api/community-deals' && method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    const f = dealFields(body);
+    if (!f.community) return sendJSON(res, 400, { error: '小区名称不能为空' });
+    const r = await pool.query(
+      `INSERT INTO community_deals
+        (owner_id, city, district, community, layout, area, floor, total_price, unit_price, list_price, deal_date, deal_cycle, agent)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING id, owner_id, city, district, community, layout, area, floor,
+         total_price, unit_price, list_price, to_char(deal_date,'YYYY-MM-DD') AS deal_date,
+         deal_cycle, agent, created_at`,
+      [uid, f.city, f.district, f.community, f.layout, f.area, f.floor, f.total_price, f.unit_price, f.list_price, f.deal_date, f.deal_cycle, f.agent]
+    );
+    return sendJSON(res, 201, { data: r.rows[0] });
+  }
+  // 插件批量推送（去重：同小区 + 同户型 + 同面积 + 同成交日期视为同一条）
+  if (pathname === '/api/community-deals/batch' && method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    const rows = Array.isArray(body) ? body : (Array.isArray(body.rows) ? body.rows : []);
+    let added = 0, skipped = 0;
+    for (const item of rows) {
+      const f = dealFields(item);
+      if (!f.community) { skipped++; continue; }
+      const dup = await pool.query(
+        `SELECT 1 FROM community_deals WHERE owner_id=$1 AND community=$2 AND city=$3 AND district=$4
+          AND layout=$5 AND area IS NOT DISTINCT FROM $6 AND deal_date IS NOT DISTINCT FROM $7 LIMIT 1`,
+        [uid, f.community, f.city, f.district, f.layout, f.area, f.deal_date]
+      );
+      if (dup.rowCount) { skipped++; continue; }
+      await pool.query(
+        `INSERT INTO community_deals
+          (owner_id, city, district, community, layout, area, floor, total_price, unit_price, list_price, deal_date, deal_cycle, agent)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [uid, f.city, f.district, f.community, f.layout, f.area, f.floor, f.total_price, f.unit_price, f.list_price, f.deal_date, f.deal_cycle, f.agent]
+      );
+      added++;
+    }
+    return sendJSON(res, 200, { data: { added, skipped } });
+  }
+  const dealEdit = pathname.match(/^\/api\/community-deals\/([^/]+)$/);
+  if (dealEdit && (method === 'PUT' || method === 'DELETE')) {
+    if (method === 'DELETE') {
+      const r = await pool.query('DELETE FROM community_deals WHERE id=$1 AND owner_id=$2', [dealEdit[1], uid]);
+      if (!r.rowCount) return sendJSON(res, 404, { error: '未找到该记录或无权限' });
+      return sendJSON(res, 200, { data: { ok: true } });
+    }
+    let body;
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    const f = dealFields(body);
+    if (!f.community) return sendJSON(res, 400, { error: '小区名称不能为空' });
+    const r = await pool.query(
+      `UPDATE community_deals SET city=$3, district=$4, community=$5, layout=$6, area=$7, floor=$8,
+        total_price=$9, unit_price=$10, list_price=$11, deal_date=$12, deal_cycle=$13, agent=$14
+       WHERE id=$1 AND owner_id=$2
+       RETURNING id, owner_id, city, district, community, layout, area, floor,
+         total_price, unit_price, list_price, to_char(deal_date,'YYYY-MM-DD') AS deal_date,
+         deal_cycle, agent, created_at`,
+      [dealEdit[1], uid, f.city, f.district, f.community, f.layout, f.area, f.floor, f.total_price, f.unit_price, f.list_price, f.deal_date, f.deal_cycle, f.agent]
+    );
+    if (!r.rowCount) return sendJSON(res, 404, { error: '未找到该记录或无权限' });
+    return sendJSON(res, 200, { data: r.rows[0] });
   }
 
   // ---------- 购房知识：用户上传资料（按账号隔离） ----------

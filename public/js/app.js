@@ -1004,7 +1004,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.7.0';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.0';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -4432,6 +4432,186 @@
     }
   }
 
+  // ---------- 历史成交价：按小区聚合的成交记录弹窗 ----------
+  // 一条 = 一次成交，按小区共享；本房源的小区名自动预填。手动录入与插件采集走同一张表。
+  async function openCommunityDealsModal(p) {
+    const loc = p.location || {};
+    const city = String(loc.city || '').trim();
+    const district = String(loc.district || '').trim();
+    const community = String(loc.community || '').trim();
+
+    let overlay = $('cd-modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'cd-modal-overlay';
+      overlay.id = 'cd-modal-overlay';
+      overlay.setAttribute('role', 'presentation');
+      overlay.innerHTML =
+        '<div class="cd-modal" role="dialog" aria-modal="true" aria-label="历史成交价">' +
+          '<div class="cd-modal-head">' +
+            '<h3 style="margin:0">📈 历史成交价</h3>' +
+            '<button type="button" class="btn sm" id="cd-close" title="关闭">✕</button>' +
+          '</div>' +
+          '<div class="cd-modal-body">' +
+            '<div id="cd-summary" class="cd-summary"></div>' +
+            '<div class="cd-toolbar">' +
+              '<button type="button" class="btn primary sm" id="cd-add">＋ 新增成交记录</button>' +
+              '<span class="muted" id="cd-scope"></span>' +
+            '</div>' +
+            '<div id="cd-form-wrap" class="cd-form-wrap hidden"></div>' +
+            '<div id="cd-table-wrap" class="cd-table-wrap"></div>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCommunityDealsModal(); });
+      const cb = overlay.querySelector('#cd-close');
+      if (cb) cb.onclick = closeCommunityDealsModal;
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && overlay.classList.contains('open')) closeCommunityDealsModal();
+      });
+    }
+
+    const state_cd = { rows: [], editing: null };
+    const formWrap = overlay.querySelector('#cd-form-wrap');
+    const tableWrap = overlay.querySelector('#cd-table-wrap');
+    const summary = overlay.querySelector('#cd-summary');
+    const scope = overlay.querySelector('#cd-scope');
+
+    const fmt = (n, suffix) => (n == null || n === '' ? '—' : esc(String(n)) + (suffix || ''));
+    const dealDateOf = (r) => (r.deal_date ? String(r.deal_date).slice(0, 10) : '—');
+
+    const renderTable = () => {
+      const rows = state_cd.rows;
+      if (!rows.length) {
+        tableWrap.innerHTML = '<div class="muted" style="padding:24px 0;text-align:center">该小区还没有成交记录。点「＋ 新增成交记录」录一条，或用采集插件批量导入。</div>';
+        summary.innerHTML = '';
+        return;
+      }
+      // 统计：均价 / 套数 / 最近成交
+      const priced = rows.filter((r) => r.unit_price != null && Number(r.unit_price) > 0);
+      const avg = priced.length ? Math.round(priced.reduce((s, r) => s + Number(r.unit_price), 0) / priced.length) : null;
+      summary.innerHTML =
+        '<span>共 <b>' + rows.length + '</b> 条</span>' +
+        (avg != null ? '<span>平均单价 <b>' + avg + '</b> 元/㎡</span>' : '') +
+        '<span>最近成交 <b>' + esc(dealDateOf(rows[0])) + '</b></span>';
+      tableWrap.innerHTML =
+        '<table class="cd-table"><thead><tr>' +
+          '<th>户型</th><th>面积(㎡)</th><th>楼层</th><th>成交总价(万)</th>' +
+          '<th>单价(元/㎡)</th><th>挂牌价(万)</th><th>成交日期</th><th>周期</th><th>成交人</th><th>操作</th>' +
+        '</tr></thead><tbody>' +
+        rows.map((r) =>
+          '<tr>' +
+            '<td>' + esc(r.layout || '—') + '</td>' +
+            '<td>' + fmt(r.area) + '</td>' +
+            '<td>' + esc(r.floor || '—') + '</td>' +
+            '<td>' + fmt(r.total_price) + '</td>' +
+            '<td>' + fmt(r.unit_price) + '</td>' +
+            '<td>' + fmt(r.list_price) + '</td>' +
+            '<td>' + esc(dealDateOf(r)) + '</td>' +
+            '<td>' + esc(r.deal_cycle || '—') + '</td>' +
+            '<td>' + esc(r.agent || '—') + '</td>' +
+            '<td class="cd-ops">' +
+              '<button type="button" class="btn sm cd-edit" data-id="' + esc(r.id) + '">编辑</button>' +
+              '<button type="button" class="btn sm danger cd-del" data-id="' + esc(r.id) + '">删</button>' +
+            '</td>' +
+          '</tr>'
+        ).join('') +
+        '</tbody></table>';
+      tableWrap.querySelectorAll('.cd-edit').forEach((b) => b.onclick = () => {
+        const row = state_cd.rows.find((x) => x.id === b.dataset.id);
+        if (row) showForm(row);
+      });
+      tableWrap.querySelectorAll('.cd-del').forEach((b) => b.onclick = async () => {
+        if (!confirm('确定删除这条成交记录？删除后不可恢复。')) return;
+        try {
+          await Store.dealDelete(b.dataset.id);
+          state_cd.rows = state_cd.rows.filter((x) => x.id !== b.dataset.id);
+          renderTable(); toast('已删除');
+        } catch (e) { toast('删除失败：' + e.message); }
+      });
+    };
+
+    const showForm = (row) => {
+      state_cd.editing = row || null;
+      // 新增时预填当前房源的小区/城市/区域，省得重复手输
+      const d = row || { community, city, district };
+      const val = (k) => esc(d[k] == null ? '' : String(d[k]));
+      const dateVal = d.deal_date ? String(d.deal_date).slice(0, 10) : '';
+      formWrap.innerHTML =
+        '<div class="cd-form-title">' + (row ? '编辑成交记录' : '新增成交记录') + '</div>' +
+        '<div class="cd-form-grid">' +
+          '<label>小区<input id="cd-f-community" class="tb-in" value="' + val('community') + '" placeholder="小区名称"/></label>' +
+          '<label>城市<input id="cd-f-city" class="tb-in" value="' + val('city') + '" placeholder="如 成都"/></label>' +
+          '<label>区域<input id="cd-f-district" class="tb-in" value="' + val('district') + '" placeholder="如 天府新区"/></label>' +
+          '<label>户型<input id="cd-f-layout" class="tb-in" value="' + val('layout') + '" placeholder="如 3-2-1-2"/></label>' +
+          '<label>面积(㎡)<input id="cd-f-area" class="tb-in" type="number" step="0.01" value="' + val('area') + '"/></label>' +
+          '<label>楼层<input id="cd-f-floor" class="tb-in" value="' + val('floor') + '" placeholder="如 26/41"/></label>' +
+          '<label>成交总价(万)<input id="cd-f-total" class="tb-in" type="number" step="0.01" value="' + val('total_price') + '"/></label>' +
+          '<label>单价(元/㎡)<input id="cd-f-unit" class="tb-in" type="number" step="0.01" value="' + val('unit_price') + '"/></label>' +
+          '<label>挂牌价(万)<input id="cd-f-list" class="tb-in" type="number" step="0.01" value="' + val('list_price') + '"/></label>' +
+          '<label>成交日期<input id="cd-f-date" class="tb-in" type="date" value="' + esc(dateVal) + '"/></label>' +
+          '<label>成交周期<input id="cd-f-cycle" class="tb-in" value="' + val('deal_cycle') + '" placeholder="如 181天"/></label>' +
+          '<label>成交人<input id="cd-f-agent" class="tb-in" value="' + val('agent') + '"/></label>' +
+        '</div>' +
+        '<div class="cd-form-ops">' +
+          '<button type="button" class="btn sm" id="cd-form-cancel">取消</button>' +
+          '<button type="button" class="btn primary sm" id="cd-form-save">保存</button>' +
+        '</div>';
+      formWrap.classList.remove('hidden');
+      const g = (id) => formWrap.querySelector('#' + id);
+      g('cd-form-cancel').onclick = () => { formWrap.classList.add('hidden'); state_cd.editing = null; };
+      g('cd-form-save').onclick = async () => {
+        const payload = {
+          community: g('cd-f-community').value.trim(),
+          city: g('cd-f-city').value.trim(),
+          district: g('cd-f-district').value.trim(),
+          layout: g('cd-f-layout').value.trim(),
+          area: g('cd-f-area').value,
+          floor: g('cd-f-floor').value.trim(),
+          totalPrice: g('cd-f-total').value,
+          unitPrice: g('cd-f-unit').value,
+          listPrice: g('cd-f-list').value,
+          dealDate: g('cd-f-date').value,
+          dealCycle: g('cd-f-cycle').value.trim(),
+          agent: g('cd-f-agent').value.trim()
+        };
+        if (!payload.community) { toast('请填小区名称'); return; }
+        try {
+          let saved;
+          if (state_cd.editing) {
+            saved = await Store.dealUpdate(state_cd.editing.id, payload);
+            const i = state_cd.rows.findIndex((x) => x.id === saved.id);
+            if (i >= 0) state_cd.rows[i] = saved;
+          } else {
+            saved = await Store.dealAdd(payload);
+            state_cd.rows.unshift(saved);
+          }
+          state_cd.rows.sort((a, b) => String(b.deal_date || b.created_at).localeCompare(String(a.deal_date || a.created_at)));
+          formWrap.classList.add('hidden');
+          state_cd.editing = null;
+          renderTable(); toast('已保存');
+        } catch (e) { toast('保存失败：' + e.message); }
+      };
+      if (window.innerWidth > 720) setTimeout(() => { const el = g('cd-f-layout'); if (el) el.focus(); }, 40);
+    };
+
+    overlay.querySelector('#cd-add').onclick = () => showForm(null);
+    scope.textContent = community ? ('当前小区：' + city + (district ? ' · ' + district : '') + ' · ' + community) : '本房源未填小区，可手动录入小区名';
+    overlay.classList.add('open');
+    document.body.classList.add('modal-open');
+    try {
+      state_cd.rows = community ? await Store.dealList({ city, district, community }) : [];
+      renderTable();
+    } catch (e) {
+      tableWrap.innerHTML = '<div class="muted" style="padding:24px 0;text-align:center">加载失败：' + esc(e.message) + '</div>';
+    }
+  }
+  function closeCommunityDealsModal() {
+    const overlay = $('cd-modal-overlay');
+    if (overlay) overlay.classList.remove('open');
+    document.body.classList.remove('modal-open');
+  }
+
   // ---------- 详情 ----------
   async function renderDetail(c, id) {
     renderPageName('detail');
@@ -4508,6 +4688,7 @@
         <span class="detail-actions" id="detail-basic-actions">
           <button class="btn ${bought ? '' : 'primary'}" id="d-purchase">${bought ? '✏️ 修改购房信息' : '🏡 标记为已购房'}</button>
           <button class="btn primary" id="d-fu-add">＋ 添加跟进</button>
+          <button class="btn" id="d-deals" title="查看本小区历史成交价">📈 历史成交价</button>
           <button class="btn ${p.favorite ? 'on' : ''}" id="d-fav">${p.favorite ? '★ 已收藏' : '☆ 收藏'}</button>
           <button class="btn" id="d-edit">编辑</button>
           <button class="btn danger" id="d-del">删除</button>
@@ -4572,6 +4753,7 @@
       openRenoForm(p.id, target.id, 'renovation');
     };
     $('d-purchase').onclick = () => openPurchaseModal(p, () => renderDetail(c, id));
+    $('d-deals').onclick = () => openCommunityDealsModal(p);
     $('d-edit').onclick = () => renderForm(c, id);
     $('d-del').onclick = async () => { await doDelete(id); setView(backView); };
     $('d-fav').onclick = async () => {

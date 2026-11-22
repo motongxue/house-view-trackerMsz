@@ -234,6 +234,28 @@ const Store = (function () {
     return r.data;
   }
 
-  return { configureMediaRules, mediaUrl, mediaLargeUrl, list, get, create, update, remove, seed, batch, trash, restore, upload, uploadFile, purge, toggleFavorite, listFollowups, addFollowup, delFollowup, knowledgeList, knowledgeUpload, knowledgeDelete, knowledgeCreateNote };
+  // 历史成交价：按小区聚合（city/district/community 不传则返回全部）
+  async function dealList(q) {
+    const qs = q ? ('?' + new URLSearchParams(q).toString()) : '';
+    const r = await Api.get('/api/community-deals' + qs);
+    return r.data || [];
+  }
+  async function dealAdd(payload) {
+    const r = await Api.post('/api/community-deals', payload);
+    return r.data;
+  }
+  async function dealUpdate(id, payload) {
+    const r = await Api.put('/api/community-deals/' + encodeURIComponent(id), payload);
+    return r.data;
+  }
+  async function dealDelete(id) {
+    await Api.del('/api/community-deals/' + encodeURIComponent(id));
+  }
+  async function dealBatch(rows) {
+    const r = await Api.post('/api/community-deals/batch', { rows });
+    return r.data;
+  }
+
+  return { configureMediaRules, mediaUrl, mediaLargeUrl, list, get, create, update, remove, seed, batch, trash, restore, upload, uploadFile, purge, toggleFavorite, listFollowups, addFollowup, delFollowup, knowledgeList, knowledgeUpload, knowledgeDelete, knowledgeCreateNote, dealList, dealAdd, dealUpdate, dealDelete, dealBatch };
 })();
 window.Store = Store;
