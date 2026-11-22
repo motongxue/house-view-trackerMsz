@@ -2407,6 +2407,9 @@ const MIME = {
   '.mkv': 'video/x-matroska'
 };
 
+// 允许被同源 iframe 承载的页面（其余一律 X-Frame-Options: DENY）
+const FRAMEABLE_PAGES = new Set(['/floorplan.html', '/floorplan-designer.html']);
+
 function serveStatic(req, res, url) {
   let urlPath = decodeURIComponent(url.pathname.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
@@ -2418,8 +2421,10 @@ function serveStatic(req, res, url) {
     const isMedia = filePath.startsWith(path.join(ROOT, 'media'));
     // 禁用启发式缓存：本地开发频繁改版，必须每次拿到最新文件（no-cache 仍允许 304 协商）
     const staticHeaders = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
-    // 装修设计：该页由主界面用同源 iframe 承载，需单独放宽 X-Frame-Options（其它页面仍 DENY）
-    if (urlPath === '/floorplan.html') staticHeaders['X-Frame-Options'] = 'SAMEORIGIN';
+    // 装修设计：这两个页面由主界面用同源 iframe 承载，必须单独放宽 X-Frame-Options，
+    // 否则会被全局 DENY 拦掉（v1.10.0 默认内嵌高级设计器后就是这么炸的）。
+    // 基础模式 = floorplan.html；高级模式 = floorplan-designer.html。其它页面维持 DENY。
+    if (FRAMEABLE_PAGES.has(urlPath)) staticHeaders['X-Frame-Options'] = 'SAMEORIGIN';
     head(res, 200, staticHeaders, isMedia);
     res.end(data);
   });

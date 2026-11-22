@@ -1041,7 +1041,7 @@
       f.src = fpAdvancedUrl();
     } else {
       f.title = '装修设计 · 3D 户型';
-      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.0';
+      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.1';
     }
     stage.appendChild(f);
   }
@@ -1221,7 +1221,7 @@
   // 高级设计器地址：设计器只读同源 localStorage['hvt-design-spec'] / ?spec=，
   // propId 仅作排障标记保留；需要（重新）生成方案时从设计器里 AI 面板的「上传户型图」入口进识别页。
   function fpAdvancedUrl() {
-    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.0';
+    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.1';
   }
 
   // 统一入口：离开本视图时 renderView 会调 destroyFloorplan()（同时清理同源同步监听）

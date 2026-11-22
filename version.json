@@ -1,15 +1,20 @@
 {
-  "version": "v1.10.0",
+  "version": "v1.10.1",
   "date": "2026-11-22",
-  "notes": "装修设计页面默认进「高级设计」（AI 识别户型 / 3D 漫游 / 水电点位），顶栏新增「基础」按钮，点一下切回原来的 3D 户型布置页；基础页里的按钮变成「高级设计」可随时切回。",
-  "package": "house-view-tracker-linux-x64_v1.10.0.tar.gz",
+  "notes": "修复装修设计页打不开：服务端给所有页面都发了 X-Frame-Options: DENY，只给基础布置页开了同源例外；v1.10.0 改成默认内嵌「高级设计」后，设计器页仍被 DENY，浏览器直接拦下并显示「拒绝了我们的连接请求」。现把设计器页也加入同源白名单。",
+  "package": "house-view-tracker-linux-x64_v1.10.1.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.10.0/house-view-tracker-linux-x64_v1.10.0.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.10.0/house-view-tracker-linux-x64_v1.10.0.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.10.1/house-view-tracker-linux-x64_v1.10.1.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.10.1/house-view-tracker-linux-x64_v1.10.1.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.10.1",
+      "date": "2026-11-22",
+      "notes": "修复「装修设计页报 42.194.228.171 拒绝了我们的连接请求」：服务端安全头给所有页面都发了 X-Frame-Options: DENY，只单独给基础布置页 floorplan.html 放成 SAMEORIGIN。v1.10.0 把「高级设计」改成默认内嵌之后，设计器页 floorplan-designer.html 仍然吃到 DENY，浏览器就拒绝把它放进同源 iframe，页面上只剩一句「拒绝了我们的连接请求」。现在把设计器页也加进同源白名单（顺手改成一份白名单集合，以后再加内嵌页只改一行）；其它页面、API、媒体文件仍是 DENY，安全策略没有放松。"
+    },
     {
       "version": "v1.10.0",
       "date": "2026-11-22",
