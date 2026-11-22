@@ -56,7 +56,7 @@ const SECURITY_HEADERS = {
     // http: 仅兜底本地 http 开发时高德个别图标/瓦片走明文；HTTPS 部署下浏览器会自行拦截混合内容
     "img-src 'self' data: blob: https: http:; media-src 'self' https:; font-src 'self' data: https:; " +
     // 放行版本文件托管域名：关于页「检查更新 / 版本记录」要 fetch UPDATE_URL（GitHub raw / Gitee / jsDelivr 镜像）
-    "connect-src 'self' https://webapi.amap.com https://restapi.amap.com https://*.amap.com https://*.autonavi.com https://raw.githubusercontent.com https://gitee.com https://fastly.jsdelivr.net https://cdn.jsdelivr.net; " +
+    "connect-src 'self' https://webapi.amap.com https://restapi.amap.com https://*.amap.com https://*.autonavi.com https://raw.githubusercontent.com https://gitee.com https://raw.giteeusercontent.com https://fastly.jsdelivr.net https://cdn.jsdelivr.net; " +
     "worker-src 'self' blob:; " +
     "frame-src 'self'; object-src 'none'; base-uri 'self'"
 };

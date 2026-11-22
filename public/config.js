@@ -22,14 +22,17 @@ window.APP_CONFIG = {
   // 留空 = 「检查更新」按钮会提示未配置。只读取公开版本信息，不上传任何账号/房源数据。
   // Gitee 示例：https://gitee.com/你的账号/house-view-tracker/raw/main/version.json
   // GitHub 示例：https://raw.githubusercontent.com/你的账号/house-view-tracker/main/version.json
-  // 已配置：仓库 motongxue/house-view-trackerMsz 的 version.json（同时供检查更新与关于页时间轴读取）
-  UPDATE_URL: 'https://raw.githubusercontent.com/motongxue/house-view-trackerMsz/main/version.json',
+  // 已配置：Gitee 仓库 mo_shan_zhu/house-view-tracker 的 version.json（同时供检查更新与关于页时间轴读取）
+  // v1.8.5：主源切到 Gitee。原因：GitHub raw / jsDelivr 的 CDN 会把 @main 这个别名缓存住，
+  //   推送后仍返回旧提交里的版本号，导致「服务器说已是最新、页面时间轴说 1.8.x」这种自相矛盾。
+  //   Gitee raw 走 302 到 raw.giteeusercontent.com，缓存短、国内直连稳定（CSP 已放行该域名）。
+  UPDATE_URL: 'https://gitee.com/mo_shan_zhu/house-view-tracker/raw/main/version.json',
 
   // 版本文件备用镜像（可选，数组，按顺序兜底）。
-  // 背景：部分机房直连 raw.githubusercontent.com 会间歇性 ETIMEDOUT，多给一条线成功率就上去了。
+  // 背景：Gitee 偶尔也会抽风，GitHub raw 在国内机房会间歇性 ETIMEDOUT，多留两条线。
   // 前端与后端都读这份清单；镜像只镜像仓库文件，所以能取 version.json，但取不了 56MB 的 Release 附件。
   UPDATE_MIRRORS: [
-    'https://fastly.jsdelivr.net/gh/motongxue/house-view-trackerMsz@main/version.json',
-    'https://cdn.jsdelivr.net/gh/motongxue/house-view-trackerMsz@main/version.json'
+    'https://raw.githubusercontent.com/motongxue/house-view-trackerMsz/main/version.json',
+    'https://fastly.jsdelivr.net/gh/motongxue/house-view-trackerMsz@main/version.json'
   ]
 };

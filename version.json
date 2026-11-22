@@ -1,15 +1,20 @@
 {
-  "version": "v1.8.4",
+  "version": "v1.8.5",
   "date": "2026-11-22",
-  "notes": "刷新体验优化：本地已有登录态时不再铺整屏启动遮罩，直接显示应用界面；未登录仍保留遮罩，避免先闪登录页。",
-  "package": "house-view-tracker-linux-x64_v1.8.4.tar.gz",
+  "notes": "版本文件主源切换到 Gitee，修复「明明有新版本却提示已是最新」：GitHub 的 CDN 会缓存 @main 指向旧提交，导致服务器读到的版本号比实际旧。现在优先读 Gitee，GitHub / jsDelivr 降为兜底。",
+  "package": "house-view-tracker-linux-x64_v1.8.5.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.4/house-view-tracker-linux-x64_v1.8.4.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.4/house-view-tracker-linux-x64_v1.8.4.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.5/house-view-tracker-linux-x64_v1.8.5.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.5/house-view-tracker-linux-x64_v1.8.5.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.5",
+      "date": "2026-11-22",
+      "notes": "修复「检查更新误报已是最新」：版本文件主源由 GitHub raw 切换到 Gitee raw（GitHub / jsDelivr 降为兜底镜像），并放行 raw.giteeusercontent.com。根因是 GitHub 的 CDN 会把 @main 别名缓存住，推送新版本后仍返回旧提交里的版本号，导致服务器判定「远程不比本地新」。"
+    },
     {
       "version": "v1.8.4",
       "date": "2026-11-22",

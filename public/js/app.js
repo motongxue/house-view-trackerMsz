@@ -1020,7 +1020,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.4';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.5';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5201,7 +5201,7 @@
       box.innerHTML = '<div class="pv-up-card"><div class="pv-up-err">启动升级失败：' + esc(e.message || e) + '</div></div>';
     }
   }
-  // 版本文件多源读取（v1.8.4）：raw.githubusercontent.com 在部分机房会间歇性超时，
+  // 版本文件多源读取（v1.8.5）：raw.githubusercontent.com 在部分机房会间歇性超时，
   // 服务端已改为并发竞速；浏览器侧同样按 UPDATE_URL → UPDATE_MIRRORS 顺序兜底，各 8 秒超时。
   function updateSourceList() {
     const cfg = window.APP_CONFIG || {};
@@ -5232,20 +5232,31 @@
     }
     throw new Error(errs.join('；'));
   }
+  // v1.8.5：页面被缓存时（app.js?v= 的戳比服务器实际版本旧）给一句明确提示，
+  //   否则用户会一直看到旧版本号，误以为程序没升级成功。
+  function staleTip(curReal, curTag) {
+    const a = String(curReal || '').trim(), b = String(curTag || '').trim();
+    if (!a || !b || a === b) return '';
+    return '<div class="pv-up-muted">提示：当前页面是旧缓存（' + esc(b) + '），服务器实际运行 ' + esc(a) + '。按 Ctrl+F5 强刷即可更新界面。</div>';
+  }
   async function checkForUpdate(curTag, box) {
     if (!box) return;
     stopUpgradePoll();
     box.hidden = false;
     box.className = 'pv-update';
     box.innerHTML = '<span class="pv-up-muted">正在检查…</span>';
-    let info = null, latest = '', backendErr = '';
+    let info = null, latest = '', backendErr = '', curReal = curTag;
+    // v1.8.5：判断「是否有新版本」必须用服务器返回的真实版本（info.current），
+    //   不能用浏览器里 app.js?v= 的戳——页面被缓存时那个戳是旧的，会出现
+    //   「服务器其实 1.8.5、页头写 1.8.3、于是把远程 1.8.4 判成『不比本地新』」的怪结论。
     try {
       const chk = await Api.get('/api/upgrade/check');
       info = (chk && chk.data) || {};
+      curReal = String(info.current || '').trim() || curTag;
       latest = String(info.latest || '').trim();
       if (!latest) throw new Error('版本文件缺少 version 字段');
-      if (upgraderCmp(latest, curTag) <= 0) {
-        box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curTag) + '）</span>';
+      if (upgraderCmp(latest, curReal) <= 0) {
+        box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curReal) + '）</span>' + staleTip(curReal, curTag);
         return;
       }
     } catch (e) {
@@ -5270,7 +5281,7 @@
     const canOneKey = !!(info && info.hasNew === true) && (info.admin !== false);
     const notes = String(info.notes || '').trim();
     const date = String(info.date || '').trim();
-    // v1.8.4：服务端所有源都失败时会用本地缓存顶上，这里必须说清楚「可能不是最新」
+    // v1.8.5：服务端所有源都失败时会用本地缓存顶上，这里必须说清楚「可能不是最新」
     const cachedTip = (info && info.cached)
       ? '<div class="pv-up-muted">⚠ 服务器此刻连不上版本文件，以下为上次缓存的信息' +
         (info.cachedAt ? '（' + new Date(info.cachedAt).toLocaleString() + '）' : '') + '，可能不是最新。</div>'
@@ -5279,7 +5290,7 @@
       box.innerHTML = '<div class="pv-up-card">' +
         '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
         (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
-        cachedTip +
+        cachedTip + staleTip(curReal, curTag) +
         '<div class="pv-up-tip">点击后服务器自动下载、备份、覆盖并重启，期间网站短暂中断，数据不会丢失。</div>' +
         '<button type="button" class="btn primary" id="pv-up-onekey">一键升级到 ' + esc(latest) + '</button>' +
       '</div>';

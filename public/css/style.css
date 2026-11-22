@@ -831,7 +831,7 @@ body.dark .utabs .tab.active { color: var(--primary); border-bottom-color: var(-
 /* 启动遮罩：盖住 boot 判断登录态前的空档，避免刷新先闪登录页 */
 .boot-loading { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--primary) 0%, var(--aux-cyan) 100%); }
 .boot-loading-inner { font-size: 17px; font-weight: 700; letter-spacing: 2px; color: #fff; opacity: .95; }
-/* v1.8.4：本地已有登录态时（html.boot-app 由 index.html 内联脚本按 sessionStorage 提前打上），
+/* v1.8.5：本地已有登录态时（html.boot-app 由 index.html 内联脚本按 sessionStorage 提前打上），
    刷新不再铺整屏蓝底，直接把应用骨架显示出来；遮罩与登录页都藏掉，避免任何一帧闪回登录页。
    boot 判断完成后 app.js 会移除 boot-app 类，控制权交回正常的 .hidden 逻辑。 */
 html.boot-app #boot-loading { display: none !important; }
