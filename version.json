@@ -1,15 +1,20 @@
 {
-  "version": "v1.8.6",
+  "version": "v1.8.7",
   "date": "2026-11-22",
-  "notes": "修复多源取版本的逻辑缺陷：并发请求时按「版本号最大」取值，不再「谁先回用谁」——CDN 镜像返回旧缓存时会被正确的新版覆盖。",
-  "package": "house-view-tracker-linux-x64_v1.8.6.tar.gz",
+  "notes": "「版本更新记录」改为读服务器本地的版本文件，页头版本号与时间轴统一以本机实际运行的版本为准；不再被远程仓库/CDN 缓存里的旧版本带偏。",
+  "package": "house-view-tracker-linux-x64_v1.8.7.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.6/house-view-tracker-linux-x64_v1.8.6.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.6/house-view-tracker-linux-x64_v1.8.6.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.7/house-view-tracker-linux-x64_v1.8.7.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.7/house-view-tracker-linux-x64_v1.8.7.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.7",
+      "date": "2026-11-22",
+      "notes": "修复「版本更新记录」显示错版本：时间轴改为读服务器本地的 version.json（新增公开接口 /api/version），页头版本号与「当前版本」标记都以本机实际运行的版本为准。原先读远程仓库那份，仓库/CDN 还停在旧提交时就会出现「页头写 v1.8.6、时间轴却把 v1.8.5 标成当前版本」。同时「构建于」日期不再显示为「—」。"
+    },
     {
       "version": "v1.8.6",
       "date": "2026-11-22",

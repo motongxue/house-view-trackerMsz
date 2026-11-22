@@ -770,10 +770,21 @@ function updateUrl() {
     return (m && m[1] || '').trim();
   } catch (_) { return ''; }
 }
-function localVersion() {
-  try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version || '').trim(); }
-  catch (_) { return ''; }
+// 读服务器本地 version.json 的完整内容（版本号 / 发布日 / 本版说明 / 更新记录）。
+// v1.8.7：关于页的时间轴只认这份——远程仓库那份可能被 CDN 缓存成旧提交，
+// 拿它渲染会出现「页头写 v1.8.6、时间轴却把 v1.8.5 标成当前版本」的自相矛盾。
+function readLocalVersion() {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')) || {};
+    return {
+      version: String(j.version || '').trim(),
+      date: String(j.date || '').trim(),
+      notes: String(j.notes || ''),
+      changelog: Array.isArray(j.changelog) ? j.changelog : []
+    };
+  } catch (_) { return { version: '', date: '', notes: '', changelog: [] }; }
 }
+function localVersion() { return readLocalVersion().version; }
 // 版本文件备用镜像：读 config.js 的 UPDATE_MIRRORS 数组（与前端同一份配置，不另开开关）。
 function updateMirrors() {
   try {
@@ -1269,6 +1280,13 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/auth/config' && method === 'GET') {
     return sendJSON(res, 200, { data: { emailVerification: EMAIL_VERIFICATION } },
       { 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+  }
+
+  // 公开：本机（服务器）实际运行版本的说明 + 更新记录，读程序目录的 version.json。
+  // 只含版本号/日期/说明/更新记录这类公开信息，不含任何密钥，因此不需要登录。
+  // 关于页时间轴以它为准，远程 UPDATE_URL 只在旧服务端（没有本接口）时作兜底。
+  if (pathname === '/api/version' && method === 'GET') {
+    return sendJSON(res, 200, { data: readLocalVersion() }, { 'Cache-Control': 'no-store' });
   }
 
   // 公开：验证码挑战（不缓存，答案只留在服务端）

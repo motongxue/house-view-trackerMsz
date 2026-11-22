@@ -1020,7 +1020,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.6';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.7';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5324,48 +5324,75 @@
   }
   // 与后端一致的版本比较（缺少后端接口时的前端兜底用）
   function upgraderCmp(a, b) { return cmpVersion(a, b); }
-  // 关于页「版本更新记录」：从 version.json 的 changelog 读取，纵向时间轴渲染（新→旧）。
-  // 与检查更新共用 UPDATE_URL；缓存一份避免每次切组都重复请求。
+  // 关于页「版本更新记录」：读服务器本地 version.json（/api/version），纵向时间轴渲染（新→旧）。
+  // v1.8.7：不再以远程 UPDATE_URL 的 version.json 为准——远程可能被 CDN 缓存成旧提交，
+  //   会出现「页头写 v1.8.6、时间轴却把 v1.8.5 标成当前版本」的自相矛盾。
+  //   远程那份只在旧服务端（没有 /api/version）时作兜底。
   let _changelogCache = null;
   async function loadChangelog(force) {
     const box = $('about-timeline');
     if (!box) return;
-    if (!updateSourceList().length) {
-      box.innerHTML = '<div class="cl-empty">未配置更新地址：在部署目录 config.js 填 UPDATE_URL 后即可显示版本更新记录。</div>';
-      return;
-    }
-    const render = (list) => {
+    const render = (list, current) => {
       if (!Array.isArray(list) || !list.length) {
         box.innerHTML = '<div class="cl-empty">暂无更新记录。</div>';
         return;
       }
-      // 按版本号语义化从新到旧排序，第一条标「最新」
+      // 按版本号语义化从新到旧排序
       const sorted = list.slice().sort((a, b) => cmpVersion(b.version, a.version));
-      box.innerHTML = sorted.map((it, i) => {
-        const isLatest = i === 0;
+      const cur = String(current || '').trim();
+      // 「当前版本」只标「版本号与服务器实际运行版本完全相同」的那条。
+      // 找不到就不标（宁可不标，也不把还没装的版本或旧版本标成当前版本）。
+      const curIdx = cur ? sorted.findIndex((it) => cmpVersion(it.version, cur) === 0) : -1;
+      const missing = (cur && curIdx < 0)
+        ? '<div class="cl-empty">更新记录里暂时没有 ' + esc(cur) + ' 这一版的说明。</div>'
+        : '';
+      box.innerHTML = missing + sorted.map((it, i) => {
+        const isCur = i === curIdx;
         const ver = String(it.version || '').trim();
         const date = String(it.date || '').trim();
         const notes = String(it.notes || '').trim();
-        return '<div class="cl-item' + (isLatest ? ' is-latest' : '') + '">' +
+        return '<div class="cl-item' + (isCur ? ' is-latest' : '') + '">' +
           '<div class="cl-head">' +
             '<span class="cl-ver">' + esc(ver) + '</span>' +
-            (isLatest ? '<span class="cl-tag">当前版本</span>' : '') +
+            (isCur ? '<span class="cl-tag">当前版本</span>' : '') +
             (date ? '<span class="cl-date">' + esc(date) + '</span>' : '') +
           '</div>' +
           (notes ? '<p class="cl-notes">' + esc(notes) + '</p>' : '') +
         '</div>';
       }).join('');
     };
-    if (_changelogCache && !force) { render(_changelogCache); return; }
+    if (_changelogCache && !force) { render(_changelogCache.list, _changelogCache.current); return; }
     box.innerHTML = '<div class="cl-loading">正在加载更新记录…</div>';
+    let list = null, current = '', firstErr = null;
+    // 1) 首选：服务器本地版本文件——这才是这台机器实际运行的版本与更新记录
     try {
-      const info = await fetchVersionJSON();
-      const list = Array.isArray(info.changelog) ? info.changelog : [];
-      _changelogCache = list;
-      render(list);
-    } catch (e) {
-      box.innerHTML = '<div class="cl-err">更新记录加载失败：' + esc(e.message || e) + '。请检查 UPDATE_URL 或稍后重试。</div>';
+      const r = await Api.get('/api/version');
+      const d = (r && r.data) || {};
+      current = String(d.version || '').trim();
+      applyLocalVersion(d);
+      list = Array.isArray(d.changelog) ? d.changelog : null;
+    } catch (e) { firstErr = e; }
+    // 2) 兜底：旧服务端没有 /api/version → 读远程 version.json（版本号只能拿页面戳参考）
+    if (!list) {
+      try {
+        const info = await fetchVersionJSON();
+        list = Array.isArray(info.changelog) ? info.changelog : [];
+        if (!current) current = buildInfo().tag;
+      } catch (e) {
+        const why = (firstErr && firstErr.message) || (e && e.message) || e;
+        box.innerHTML = '<div class="cl-err">更新记录加载失败：' + esc(why) + '。请稍后重试。</div>';
+        return;
+      }
     }
+    _changelogCache = { list: list || [], current };
+    render(_changelogCache.list, current);
+  }
+  // 页头的「版本 / 构建于」同样以服务器实际版本为准（页面被缓存时 app.js?v= 的戳是旧的）
+  function applyLocalVersion(d) {
+    const ver = String((d && d.version) || '').trim();
+    if (!ver) return;
+    const vEl = $('pv-ver'); if (vEl) vEl.textContent = ver;
+    const dEl = $('pv-date'); if (dEl) dEl.textContent = String((d && d.date) || '').trim() || '—';
   }
   // ---------- 设置页改为弹窗显示（点击「设置」菜单直接弹窗，而非整页切换） ----------
   function openSettingsModal(group) {
@@ -5605,7 +5632,7 @@
       '<div class="profile-version">' +
         '<span class="pv-mark">🏠</span>' +
         '<div class="pv-main"><b>择隅</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
-        '<div class="pv-meta"><span>版本 <b>' + esc(bv.tag) + '</b></span><span>构建于 ' + esc(bv.date) + '</span>' +
+        '<div class="pv-meta"><span>版本 <b id="pv-ver">' + esc(bv.tag) + '</b></span><span>构建于 <span id="pv-date">' + esc(bv.date) + '</span></span>' +
           '<button type="button" class="btn pv-up-btn" id="pv-check-update" title="检查是否有新版本">检查更新</button></div>' +
         '<div class="pv-update" id="pv-update" hidden></div>' +
       '</div>' +
