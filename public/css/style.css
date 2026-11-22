@@ -1130,6 +1130,18 @@ body.dark #kb-note-title::placeholder, body.dark #kb-note-content::placeholder {
   border-radius: var(--radius-sm); color: var(--text-2); font-size: 12px; line-height: 1.6;
   white-space: pre; overflow-x: auto; user-select: text;
 }
+/* 一键升级：进度条 + 阶段文字 */
+.pv-update .pv-up-running .pv-up-bar {
+  height: 6px; margin: 10px 0 8px; border-radius: 99px; overflow: hidden;
+  background: var(--panel-3, rgba(93,156,236,.14));
+}
+.pv-update .pv-up-running .pv-up-bar i {
+  display: block; height: 100%; border-radius: 99px; background: var(--primary);
+  transition: width .4s ease;
+}
+.pv-update .pv-up-phase { font-size: var(--fs-12); color: var(--text-2); }
+.pv-update .pv-up-running #pv-up-refresh,
+.pv-update .pv-up-card #pv-up-refresh { margin-top: 10px; }
 .profile-version .pv-mark {
   width: 36px; height: 36px; flex: none; border-radius: 10px;
   background: rgba(93, 156, 236, .14); display: flex; align-items: center; justify-content: center; font-size: 18px;

@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  var VER = 'v1.6.3';
+  var VER = 'v1.7.0';
   var CSS_PREFIX = 'fpi';
 
   var THEME = {

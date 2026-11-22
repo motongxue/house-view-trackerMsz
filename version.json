@@ -1,11 +1,20 @@
 {
-  "version": "v1.6.3",
+  "version": "v1.7.0",
   "date": "2026-11-22",
-  "notes": "修复刷新闪登录页、记住密码失效、更新记录 Failed to fetch；侧栏标语恢复 10px。",
-  "package": "house-view-tracker-linux-x64_v1.6.3.tar.gz",
+  "notes": "新增一键升级：管理员在设置→关于点「一键升级」，服务器自动从 Gitee/GitHub 双源下载升级包、校验、备份、覆盖并重启，失败自动回滚。",
+  "package": "house-view-tracker-linux-x64_v1.7.0.tar.gz",
+  "downloadUrls": [
+    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.7.0/house-view-tracker-linux-x64_v1.7.0.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.7.0/house-view-tracker-linux-x64_v1.7.0.tar.gz"
+  ],
   "downloadUrl": "",
   "installDir": "/data/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.7.0",
+      "date": "2026-11-22",
+      "notes": "新增「一键升级」：管理员在设置→关于点一下，服务器自动双源（Gitee/GitHub）下载升级包、校验、备份、覆盖并重启，失败自动回滚；普通用户仍只看到手动升级命令。"
+    },
     {
       "version": "v1.6.3",
       "date": "2026-11-22",

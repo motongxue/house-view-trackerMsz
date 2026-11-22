@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { spawn, execFile } = require('child_process');
 const dns = require('dns');
 const net = require('net');
 const tls = require('tls');
@@ -728,6 +729,43 @@ function verifyToken(token) {
 function sendJSON(res, code, obj, extra) {
   head(res, code, Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, extra || {}));
   res.end(JSON.stringify(obj));
+}
+
+// ---------- 一键自升级（管理员专用，异步 + 状态轮询）----------
+const { createUpgrader } = require('./upgrade');
+const upgrader = createUpgrader({
+  appDir: __dirname,
+  dataDir: (typeof EMBEDDED_DB !== 'undefined' && EMBEDDED_DB && require('./config/db-embedded').embeddedDataDir()) || path.join(__dirname, 'data'),
+  serviceName: 'house-view-tracker',
+  assertSafeUrl,
+  log: console.log
+});
+// 版本文件地址沿用前端 config.js 的 UPDATE_URL（单一数据源，不另开配置）。
+function updateUrl() {
+  try {
+    const s = fs.readFileSync(path.join(__dirname, 'public', 'config.js'), 'utf8');
+    const m = s.match(/UPDATE_URL\s*:\s*['"]([^'"]+)['"]/);
+    return (m && m[1] || '').trim();
+  } catch (_) { return ''; }
+}
+function localVersion() {
+  try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version || '').trim(); }
+  catch (_) { return ''; }
+}
+// 服务端拉取远端版本信息（走与前端同一个地址，但由服务端请求，绕开浏览器 CSP）。
+async function fetchRemoteVersion() {
+  const url = updateUrl();
+  if (!url) throw new Error('未配置 UPDATE_URL（public/config.js）');
+  await assertSafeUrl(url);
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if (!j || !j.version) throw new Error('版本文件缺少 version 字段');
+    return j;
+  } finally { clearTimeout(t); }
 }
 
 // ---------- 流式进度（SSE）----------
@@ -1475,6 +1513,61 @@ async function handleApi(req, res, url) {
   const uid = await authUid(req);
   if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
 
+  // ---------- 一键自升级：仅管理员（.env 的 ADMIN_EMAILS）----------
+  // GET  status  → 读状态给前端轮询；POST start → 触发升级（需 confirm）；POST rollback → 回滚。
+  // 非管理员一律 403；升级是高危操作，误触代价大，因此 command 必须显式确认。
+  if (pathname.startsWith('/api/upgrade/')) {
+    const admin = await isAdmin(uid);
+    if (!admin) return sendJSON(res, 403, { error: '仅管理员可执行升级操作' });
+
+    if (pathname === '/api/upgrade/status' && method === 'GET') {
+      const st = upgrader.readState();
+      return sendJSON(res, 200, { data: {
+        phase: st.phase || 'idle', ok: !!st.ok, progress: Number(st.progress) || 0,
+        message: st.message || '', error: st.error || '', target: st.target || '',
+        from: st.from || '', ts: st.ts || 0,
+        current: localVersion(), platform: process.platform,
+        adminConfigured: ADMIN_EMAILS.size > 0
+      } }, { 'Cache-Control': 'no-store' });
+    }
+
+    if (pathname === '/api/upgrade/check' && method === 'GET') {
+      try {
+        const remote = await fetchRemoteVersion();
+        const cur = localVersion();
+        return sendJSON(res, 200, { data: {
+          current: cur, latest: remote.version, hasNew: upgrader.cmpVersion(remote.version, cur) > 0,
+          notes: remote.notes || '', date: remote.date || '', package: remote.package || '',
+          admin: true, platform: process.platform
+        } });
+      } catch (e) { return sendJSON(res, 502, { error: '读取版本文件失败：' + e.message }); }
+    }
+
+    if (pathname === '/api/upgrade/start' && method === 'POST') {
+      let body;
+      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      if (body.confirm !== 'UPGRADE') return sendJSON(res, 400, { error: '缺少升级确认，操作已取消' });
+      try {
+        const remote = await fetchRemoteVersion();
+        const cur = localVersion();
+        if (upgrader.cmpVersion(remote.version, cur) <= 0) return sendJSON(res, 400, { error: '当前已是最新版本，无需升级' });
+        // 立即返回，升级在后台跑；前端轮询 status 看进度。
+        upgrader.start(remote, cur).catch((e) => console.warn('[upgrade] 升级失败：', e.message));
+        return sendJSON(res, 200, { data: { started: true, target: remote.version, from: cur } });
+      } catch (e) { return sendJSON(res, 502, { error: '启动升级失败：' + e.message }); }
+    }
+
+    if (pathname === '/api/upgrade/rollback' && method === 'POST') {
+      let body;
+      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      if (body.confirm !== 'ROLLBACK') return sendJSON(res, 400, { error: '缺少回滚确认，操作已取消' });
+      try { await upgrader.rollback(); return sendJSON(res, 200, { data: { ok: true } }); }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
+
+    return sendJSON(res, 404, { error: '未知的升级接口' });
+  }
+
   // ---------- 运行监控：只读接口 ----------
   // 普通用户强制只看自己；仅 .env 的 ADMIN_EMAILS 列出的管理员可带 scope=all 看全局。
   // 所有用户输入都走参数占位符（ph），SQL 里不拼任何用户字符串。
@@ -2203,6 +2296,9 @@ async function start() {
     console.error('⚠️ 建表失败：', e.message);
     if (EMBEDDED_DB) process.exit(1);
   }
+  // 一键升级：若上次状态停在 restarting，说明服务已成功拉起，补写 done 供前端轮询读取。
+  try { upgrader.onBoot(); } catch (e) { console.warn('[upgrade] 启动状态收尾失败：', e.message); }
+
   server.listen(PORT, () => {
     console.log(`择隅已启动： http://127.0.0.1:${PORT}/  （浏览器打开 http://服务器IP:${PORT}/）`);
     console.log(EMBEDDED_DB

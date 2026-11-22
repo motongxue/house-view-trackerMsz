@@ -1004,7 +1004,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.3';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.7.0';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -4901,68 +4901,175 @@
     }
     return 0;
   }
-  // 检查更新：读公开 version.json，只做提示 + 生成升级命令，服务器文件一个都不碰。
+  // 检查更新：读公开 version.json；管理员且后端支持时显示「一键升级」，否则退回复制命令。
+  // 一键升级：后端异步下载/备份/覆盖/重启，本页轮询状态；重启瞬间连接会断，自动重试。
+  let upgradePoll = null;
+  function stopUpgradePoll() { if (upgradePoll) { clearInterval(upgradePoll); upgradePoll = null; } }
+  function manualUpgradeCard(info, latest, reason) {
+    const pkg = String(info.package || 'house-view-tracker-linux-x64_' + latest.replace(/^v/i, '') + '.tar.gz');
+    const dl = String((info.downloadUrls && info.downloadUrls[0]) || info.downloadUrl || '');
+    const dir = String(info.installDir || '/data/house-view-tracker');
+    const lines = [
+      'sudo systemctl stop house-view-tracker',
+      'cd ' + dir.replace(/\/+$/, ''),
+      'cp -r data ../house-view-tracker-data-backup-$(date +%Y%m%d)',
+      dl ? ('curl -fL -o /tmp/' + pkg + ' "' + dl + '"') : ('# 请先把升级包 ' + pkg + ' 上传到服务器 /tmp/'),
+      'tar -xzf /tmp/' + pkg + ' --strip-components=1',
+      'sudo systemctl restart house-view-tracker'
+    ];
+    const cmd = lines.join('\n');
+    const notes = String(info.notes || '').trim();
+    const date = String(info.date || '').trim();
+    return '<div class="pv-up-card">' +
+      '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
+      (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
+      (reason ? '<div class="pv-up-tip">' + esc(reason) + ' 可复制下面命令手动升级：</div>' : '') +
+      '<pre class="pv-up-cmd" id="pv-up-cmd">' + esc(cmd) + '</pre>' +
+      '<button type="button" class="btn primary" id="pv-up-copy">复制升级命令</button>' +
+    '</div>';
+  }
+  function bindCopy(box, cmd) {
+    const cp = $('pv-up-copy');
+    if (!cp) return;
+    cp.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(cmd);
+        cp.textContent = '✓ 已复制';
+        setTimeout(() => { if (cp.isConnected) cp.textContent = '复制升级命令'; }, 1800);
+      } catch (e) {
+        const pre = $('pv-up-cmd');
+        if (pre) { const rg = document.createRange(); rg.selectNodeContents(pre); const se = window.getSelection(); se.removeAllRanges(); se.addRange(rg); }
+        cp.textContent = '请手动复制上面选中的命令';
+      }
+    };
+  }
+  // 轮询升级状态；重启时 fetch 会短暂失败，容忍 6 次（约 12 秒）。
+  function pollUpgrade(box, target) {
+    stopUpgradePoll();
+    let misses = 0;
+    const render = (s) => {
+      const pct = Math.max(0, Math.min(100, Number(s.progress) || 0));
+      box.innerHTML = '<div class="pv-up-card pv-up-running">' +
+        '<div class="pv-up-head"><b>正在升级到 ' + esc(target) + '</b><span>' + esc(String(s.phase || '')) + '</span></div>' +
+        '<div class="pv-up-bar"><i style="width:' + pct + '%"></i></div>' +
+        '<div class="pv-up-phase">' + esc(s.message || '处理中…') + '（' + pct + '%）</div>' +
+        (s.error ? '<div class="pv-up-err">' + esc(s.error) + '</div>' : '') +
+      '</div>';
+    };
+    const tick = async () => {
+      let d;
+      try {
+        const r = await Api.get('/api/upgrade/status');
+        d = (r && r.data) || {};
+        misses = 0;
+      } catch (e) {
+        misses++;
+        if (misses >= 6) {
+          stopUpgradePoll();
+          box.innerHTML = '<div class="pv-up-card"><div class="pv-up-phase">服务正在重启或暂时无法连接。请刷新页面（Ctrl+F5）后到「设置 → 关于」查看升级结果。</div>' +
+            '<button type="button" class="btn primary" id="pv-up-refresh">刷新页面</button></div>';
+          const rf = $('pv-up-refresh'); if (rf) rf.onclick = () => location.reload();
+          return;
+        }
+        box.innerHTML = '<div class="pv-up-card"><div class="pv-up-phase">服务正在重启，正在重新连接（' + misses + '/6）…</div></div>';
+        return;
+      }
+      render(d);
+      if (d.phase === 'done') {
+        stopUpgradePoll();
+        box.innerHTML = '<div class="pv-up-card"><div class="pv-up-ok">✓ 升级完成，当前版本 ' + esc(d.target || target) + '。请刷新页面（Ctrl+F5）使新界面生效。</div>' +
+          '<button type="button" class="btn primary" id="pv-up-refresh">立即刷新</button></div>';
+        const rf = $('pv-up-refresh'); if (rf) rf.onclick = () => location.reload();
+        return;
+      }
+      if (d.phase === 'failed') {
+        stopUpgradePoll();
+        box.innerHTML = '<div class="pv-up-card"><div class="pv-up-err">升级失败：' + esc(d.error || d.message || '未知错误') + '</div>' +
+          '<div class="pv-up-tip">程序已自动回滚到升级前版本；如未回滚，请联系管理员。</div></div>';
+        return;
+      }
+      // 还在 downloading / backingup / extracting / restarting，继续轮询
+    };
+    tick();
+    upgradePoll = setInterval(tick, 2000);
+  }
+  async function oneKeyUpgrade(box, latest) {
+    if (!window.confirm('确定升级到 ' + latest + ' 吗？\n\n服务器会自动下载升级包、备份程序、覆盖并重启，期间网站会短暂中断（约几十秒）。数据不会丢失。')) return;
+    box.innerHTML = '<div class="pv-up-card"><div class="pv-up-phase">正在启动升级…</div></div>';
+    try {
+      await Api.post('/api/upgrade/start', { confirm: 'UPGRADE' });
+      pollUpgrade(box, latest);
+    } catch (e) {
+      box.innerHTML = '<div class="pv-up-card"><div class="pv-up-err">启动升级失败：' + esc(e.message || e) + '</div></div>';
+    }
+  }
   async function checkForUpdate(curTag, box) {
     if (!box) return;
-    const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
+    stopUpgradePoll();
     box.hidden = false;
     box.className = 'pv-update';
-    if (!url) {
-      box.innerHTML = '<span class="pv-up-muted">未配置更新地址：请在部署目录的 config.js 里填 UPDATE_URL（Gitee/GitHub 上 version.json 的 raw 地址）。</span>';
-      return;
-    }
     box.innerHTML = '<span class="pv-up-muted">正在检查…</span>';
+    let info = null, latest = '';
     try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const info = await r.json();
-      const latest = String(info.version || '').trim();
+      const chk = await Api.get('/api/upgrade/check');
+      info = (chk && chk.data) || {};
+      latest = String(info.latest || '').trim();
       if (!latest) throw new Error('版本文件缺少 version 字段');
-      const cmp = cmpVersion(latest, curTag);
-      if (cmp <= 0) {
+      if (upgraderCmp(latest, curTag) <= 0) {
         box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curTag) + '）</span>';
         return;
       }
-      // 升级命令：停服务 → 备份数据 → 下载新包 → 覆盖 → 重启。目录/包名来自 version.json，可为空提示手填。
+    } catch (e) {
+      // 后端接口不可用（旧版本服务端 / 非管理员 / 网络问题）→ 退回前端直读公开 version.json
+      try {
+        const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
+        if (!url) throw new Error('未配置更新地址');
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        info = await r.json();
+        latest = String(info.version || '').trim();
+        if (!latest) throw new Error('版本文件缺少 version 字段');
+        if (cmpVersion(latest, curTag) <= 0) {
+          box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curTag) + '）</span>';
+          return;
+        }
+      } catch (e2) {
+        box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(e2.message || e2) + '。请检查网络或 UPDATE_URL 配置。</span>';
+        return;
+      }
+    }
+    const canOneKey = !!(info && info.hasNew === true) && (info.admin !== false);
+    const notes = String(info.notes || '').trim();
+    const date = String(info.date || '').trim();
+    if (canOneKey) {
+      box.innerHTML = '<div class="pv-up-card">' +
+        '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
+        (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
+        '<div class="pv-up-tip">点击后服务器自动下载、备份、覆盖并重启，期间网站短暂中断，数据不会丢失。</div>' +
+        '<button type="button" class="btn primary" id="pv-up-onekey">一键升级到 ' + esc(latest) + '</button>' +
+      '</div>';
+      const btn = $('pv-up-onekey');
+      if (btn) btn.onclick = () => oneKeyUpgrade(box, latest);
+    } else {
+      // 非管理员或旧服务端：只给手动命令（保持向后兼容，不暴露升级操作给普通用户）
+      // 重新拼一份完整命令（info 可能来自公开 version.json）
       const pkg = String(info.package || 'house-view-tracker-linux-x64_' + latest.replace(/^v/i, '') + '.tar.gz');
-      const dl = String(info.downloadUrl || '');
+      const dl = String((info.downloadUrls && info.downloadUrls[0]) || info.downloadUrl || '');
       const dir = String(info.installDir || '/data/house-view-tracker');
-      const lines = [
+      const cmd = [
         'sudo systemctl stop house-view-tracker',
         'cd ' + dir.replace(/\/+$/, ''),
         'cp -r data ../house-view-tracker-data-backup-$(date +%Y%m%d)',
         dl ? ('curl -fL -o /tmp/' + pkg + ' "' + dl + '"') : ('# 请先把升级包 ' + pkg + ' 上传到服务器 /tmp/'),
         'tar -xzf /tmp/' + pkg + ' --strip-components=1',
         'sudo systemctl restart house-view-tracker'
-      ];
-      const cmd = lines.join('\n');
-      const notes = String(info.notes || '').trim();
-      const date = String(info.date || '').trim();
-      box.innerHTML =
-        '<div class="pv-up-card">' +
-          '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
-          (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
-          '<div class="pv-up-tip">网页不会改动服务器文件。复制下面的命令，贴到服务器执行即可升级（会先备份数据）：</div>' +
-          '<pre class="pv-up-cmd" id="pv-up-cmd">' + esc(cmd) + '</pre>' +
-          '<button type="button" class="btn primary" id="pv-up-copy">复制升级命令</button>' +
-        '</div>';
-      const cp = $('pv-up-copy');
-      if (cp) cp.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(cmd);
-          cp.textContent = '✓ 已复制';
-          setTimeout(() => { if (cp.isConnected) cp.textContent = '复制升级命令'; }, 1800);
-        } catch (e) {
-          // file:// 或 clipboard 不可用时退回选中文本
-          const pre = $('pv-up-cmd');
-          if (pre) { const rg = document.createRange(); rg.selectNodeContents(pre); const se = window.getSelection(); se.removeAllRanges(); se.addRange(rg); }
-          cp.textContent = '请手动复制上面选中的命令';
-        }
-      };
-    } catch (e) {
-      box.innerHTML = '<span class="pv-up-err">检查失败：' + esc(e.message || e) + '。请检查 UPDATE_URL 是否正确、文件是否公开可访问。</span>';
+      ].join('\n');
+      box.innerHTML = manualUpgradeCard(info, latest, '当前账号不是管理员，或服务端尚未开启一键升级');
+      bindCopy(box, cmd);
     }
   }
+  // 与后端一致的版本比较（缺少后端接口时的前端兜底用）
+  function upgraderCmp(a, b) { return cmpVersion(a, b); }
   // 关于页「版本更新记录」：从 version.json 的 changelog 读取，纵向时间轴渲染（新→旧）。
   // 与检查更新共用 UPDATE_URL；缓存一份避免每次切组都重复请求。
   let _changelogCache = null;
