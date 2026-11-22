@@ -1,15 +1,25 @@
 {
-  "version": "v1.8.2",
+  "version": "v1.8.4",
   "date": "2026-11-22",
-  "notes": "修复：退出登录 / 令牌过期 / 闲置自动退出后，已打开的设置弹窗（以及成交价弹窗、资料抽屉）仍浮在登录页上。现在回登录页时会先关闭所有浮层。",
-  "package": "house-view-tracker-linux-x64_v1.8.2.tar.gz",
+  "notes": "刷新体验优化：本地已有登录态时不再铺整屏启动遮罩，直接显示应用界面；未登录仍保留遮罩，避免先闪登录页。",
+  "package": "house-view-tracker-linux-x64_v1.8.4.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.2/house-view-tracker-linux-x64_v1.8.2.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.2/house-view-tracker-linux-x64_v1.8.2.tar.gz"
+    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.4/house-view-tracker-linux-x64_v1.8.4.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.4/house-view-tracker-linux-x64_v1.8.4.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.4",
+      "date": "2026-11-22",
+      "notes": "刷新页面不再先闪一整屏蓝色「🏠 择隅」启动页：本地已登录时直接显示应用界面（由 index.html 内联脚本提前判断登录态）；未登录仍保留遮罩，避免先闪登录页再跳转。"
+    },
+    {
+      "version": "v1.8.3",
+      "date": "2026-11-22",
+      "notes": "修复检查更新报 ETIMEDOUT：服务端改为多源并发竞速（GitHub raw / jsDelivr 镜像）各 8 秒超时、谁先回用谁；全部源失败时用本地缓存兜底并标注「可能不是最新」；失败信息会列出每个源各自的错误；关于页时间轴同样支持镜像兜底。"
+    },
     {
       "version": "v1.8.2",
       "date": "2026-11-22",

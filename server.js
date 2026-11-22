@@ -55,8 +55,8 @@ const SECURITY_HEADERS = {
     "style-src 'self' 'unsafe-inline'; " +
     // http: 仅兜底本地 http 开发时高德个别图标/瓦片走明文；HTTPS 部署下浏览器会自行拦截混合内容
     "img-src 'self' data: blob: https: http:; media-src 'self' https:; font-src 'self' data: https:; " +
-    // 放行版本文件托管域名：关于页「检查更新 / 版本记录」要 fetch UPDATE_URL（GitHub raw 或 Gitee）
-    "connect-src 'self' https://webapi.amap.com https://restapi.amap.com https://*.amap.com https://*.autonavi.com https://raw.githubusercontent.com https://gitee.com; " +
+    // 放行版本文件托管域名：关于页「检查更新 / 版本记录」要 fetch UPDATE_URL（GitHub raw / Gitee / jsDelivr 镜像）
+    "connect-src 'self' https://webapi.amap.com https://restapi.amap.com https://*.amap.com https://*.autonavi.com https://raw.githubusercontent.com https://gitee.com https://fastly.jsdelivr.net https://cdn.jsdelivr.net; " +
     "worker-src 'self' blob:; " +
     "frame-src 'self'; object-src 'none'; base-uri 'self'"
 };
@@ -774,20 +774,36 @@ function localVersion() {
   try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, 'version.json'), 'utf8')).version || '').trim(); }
   catch (_) { return ''; }
 }
-// 服务端拉取远端版本信息（走与前端同一个地址，但由服务端请求，绕开浏览器 CSP）。
+// 版本文件备用镜像：读 config.js 的 UPDATE_MIRRORS 数组（与前端同一份配置，不另开开关）。
+function updateMirrors() {
+  try {
+    const s = fs.readFileSync(path.join(__dirname, 'public', 'config.js'), 'utf8');
+    const m = s.match(/UPDATE_MIRRORS\s*:\s*\[([\s\S]*?)\]/);
+    if (!m) return [];
+    return (m[1].match(/['"]([^'"]+)['"]/g) || []).map((x) => x.replace(/^['"]|['"]$/g, '').trim()).filter(Boolean);
+  } catch (_) { return []; }
+}
+// 服务端拉取远端版本信息（走与前端同一批地址，但由服务端请求，绕开浏览器 CSP）。
+// v1.8.3：多源并发竞速 + 单源 8 秒超时 + 全挂回落 data/version-cache.json，
+// 避免 raw.githubusercontent.com 一次 ETIMEDOUT 就让「检查更新 / 一键升级」整条不可用。
 async function fetchRemoteVersion() {
   const url = updateUrl();
   if (!url) throw new Error('未配置 UPDATE_URL（public/config.js）');
-  await assertSafeUrl(url);
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 20000);
-  try {
-    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    if (!j || !j.version) throw new Error('版本文件缺少 version 字段');
-    return j;
-  } finally { clearTimeout(t); }
+  const list = upgrader.versionSources(url, updateMirrors());
+  const usable = [];
+  for (const u of list) {
+    try { await assertSafeUrl(u); usable.push(u); }
+    catch (e) { console.warn('[upgrade] 跳过不安全的版本源 ' + u + '：' + e.message); }
+  }
+  if (!usable.length) throw new Error('没有可用的版本文件地址');
+  const r = await upgrader.fetchVersion(usable);
+  const data = Object.assign({}, r.data);
+  // 用 __ 前缀元信息，避免和 version.json 自己的字段撞名；调用方只读 version/notes 等
+  data.__source = r.source || '';
+  data.__cached = !!r.cached;
+  data.__cachedAt = Number(r.cachedAt) || 0;
+  data.__tried = usable.length;
+  return data;
 }
 
 // ---------- 流式进度（SSE）----------
@@ -1560,8 +1576,11 @@ async function handleApi(req, res, url) {
         return sendJSON(res, 200, { data: {
           current: cur, latest: remote.version, hasNew: upgrader.cmpVersion(remote.version, cur) > 0,
           notes: remote.notes || '', date: remote.date || '', package: remote.package || '',
+          // v1.8.3：标记这份信息是「实时取到的」还是「本地缓存兜底」，前端据此提示可能不是最新
+          cached: !!remote.__cached, cachedAt: Number(remote.__cachedAt) || 0,
+          source: remote.__source || '', tried: Number(remote.__tried) || 1,
           admin: true, platform: process.platform
-        } });
+        } }, { 'Cache-Control': 'no-store' });
       } catch (e) {
         // 把底层原因（超时 / ENETUNREACH / 证书等）显式带出来：否则前端只能显示笼统的 502，
         // 排查「服务器明明能上 GitHub，一键升级却报错」时完全没线索。

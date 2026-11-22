@@ -29,6 +29,127 @@ function cmpVersion(a, b) {
   return 0;
 }
 
+// ---------- 版本文件多源获取（v1.8.3）----------
+// 背景：raw.githubusercontent.com 在部分机房会间歇性 ETIMEDOUT，单源单次尝试＝整条链失败。
+// 策略：多个源并发竞速（谁先成功用谁）＋ 单源超时 ＋ 全部失败回落本地缓存。
+const VERSION_TIMEOUT = 8000;
+
+// 由 GitHub raw 地址推导 jsDelivr 镜像（同一份仓库文件，国内通常更快更稳）。
+function mirrorUrls(baseUrl) {
+  const out = [];
+  const u = String(baseUrl || '').trim();
+  const m = u.match(/^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/i);
+  if (m) {
+    const owner = m[1], repo = m[2], branch = m[3], rest = m[4];
+    out.push('https://fastly.jsdelivr.net/gh/' + owner + '/' + repo + '@' + branch + '/' + rest);
+    out.push('https://cdn.jsdelivr.net/gh/' + owner + '/' + repo + '@' + branch + '/' + rest);
+  }
+  return out.filter((x) => x && x !== u);
+}
+
+// 候选地址：主地址 → 推导镜像 → 显式配置的镜像；去重保序。
+function versionSources(baseUrl, extra) {
+  const out = [];
+  const push = (v) => { const s = String(v || '').trim(); if (s && out.indexOf(s) < 0) out.push(s); };
+  push(baseUrl);
+  mirrorUrls(baseUrl).forEach(push);
+  if (Array.isArray(extra)) extra.forEach(push);
+  return out;
+}
+
+// 竞速拉取 version.json。
+// 返回 { data, source, cached, cachedAt, errors }；全失败且有缓存 → cached=true。
+async function fetchVersionRace(opt) {
+  const o = opt || {};
+  const list = (o.sources || []).map((s) => String(s || '').trim()).filter(Boolean);
+  const fetcher = o.fetch || ((...a) => global.fetch(...a));
+  const timeoutMs = Number(o.timeoutMs) || VERSION_TIMEOUT;
+  const fs = o.fs || nodeFs;
+  const cacheFile = o.cacheFile || '';
+  const now = o.now || (() => Date.now());
+  const log = o.log || (() => {});
+  if (!list.length) throw new Error('没有可用的版本文件地址');
+
+  const errors = [];
+  const ctrls = [];
+  const hostOf = (u) => { try { return new URL(u).host; } catch (_) { return u; } };
+
+  const attempt = (url) => new Promise((resolve, reject) => {
+    const ctl = new AbortController();
+    ctrls.push(ctl);
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { ctl.abort(); } catch (_) {}
+      errors.push({ url, why: '超时 ' + Math.round(timeoutMs / 1000) + ' 秒' });
+      reject(new Error('timeout'));
+    }, timeoutMs);
+    Promise.resolve()
+      .then(() => fetcher(url, { signal: ctl.signal, cache: 'no-store' }))
+      .then(async (r) => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (!j || !j.version) throw new Error('版本文件缺少 version 字段');
+        return j;
+      })
+      .then((j) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ url, data: j });
+      })
+      .catch((e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const why = e.name === 'AbortError'
+          ? ('超时 ' + Math.round(timeoutMs / 1000) + ' 秒')
+          : ((e.cause && (e.cause.code || e.cause.message)) || e.message || String(e));
+        errors.push({ url, why });
+        reject(new Error(why));
+      });
+  });
+
+  const abortAll = () => { ctrls.forEach((c) => { try { c.abort(); } catch (_) {} }); };
+
+  let win = null;
+  try {
+    win = await new Promise((resolve, reject) => {
+      let left = list.length;
+      list.forEach((u) => {
+        attempt(u).then(resolve).catch(() => { if (--left === 0) reject(new Error('all-failed')); });
+      });
+    });
+  } catch (_) { win = null; }
+  abortAll();
+
+  if (win) {
+    // 成功即落盘：下次全部源都挂时用它顶上
+    if (cacheFile) {
+      try {
+        fs.mkdirSync(nodePath.dirname(cacheFile), { recursive: true });
+        fs.writeFileSync(cacheFile, JSON.stringify({ ts: now(), url: win.url, data: win.data }, null, 2));
+      } catch (e) { log('[upgrade] 写版本缓存失败：' + e.message); }
+    }
+    if (errors.length) log('[upgrade] 部分版本源失败：' + errors.map((e) => hostOf(e.url) + '→' + e.why).join('；'));
+    return { data: win.data, source: win.url, cached: false, cachedAt: 0, errors };
+  }
+
+  // 全部失败 → 缓存兜底（保证「检查更新」不会因为一次网络抖动就彻底不可用）
+  if (cacheFile) {
+    try {
+      const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (c && c.data && c.data.version) {
+        log('[upgrade] 版本源全部失败，改用本地缓存（' + (c.url || '') + '）');
+        return { data: c.data, source: c.url || '', cached: true, cachedAt: Number(c.ts) || 0, errors };
+      }
+    } catch (_) {}
+  }
+  const detail = errors.map((e) => hostOf(e.url) + ' → ' + e.why).join('；');
+  throw new Error('全部 ' + list.length + ' 个版本源均失败' + (detail ? '（' + detail + '）' : ''));
+}
+
 function createUpgrader(opt) {
   const o = opt || {};
   const fs = o.fs || nodeFs;
@@ -44,7 +165,16 @@ function createUpgrader(opt) {
   const serviceName = o.serviceName || 'house-view-tracker';
   const statePath = path.join(dataDir, STATE_FILE);
   const backupRoot = path.join(dataDir, BACKUP_DIR);
+  const versionCachePath = path.join(dataDir, 'version-cache.json');
   let running = false;
+
+  // 供 server.js 调用：多源竞速拉版本文件，失败回落 data/version-cache.json
+  async function fetchVersion(list, more) {
+    const sources = Array.isArray(list) ? list : versionSources(o.updateUrl || '', list);
+    return fetchVersionRace(Object.assign({
+      sources, fetch: fetcher, fs, now, log, cacheFile: versionCachePath
+    }, more || {}));
+  }
 
   function readState() {
     try { return JSON.parse(fs.readFileSync(statePath, 'utf8')); }
@@ -233,7 +363,9 @@ function createUpgrader(opt) {
   }
 
   return { readState, writeState, sources, cmpVersion, start, rollback, onBoot, statePath, backupRoot,
+    fetchVersion, versionSources, versionCachePath,
     _internal: { downloadOne, verifyPkg, backup, restore, scheduleRestart } };
 }
 
-module.exports = { createUpgrader, cmpVersion, STATE_FILE, BACKUP_DIR };
+module.exports = { createUpgrader, cmpVersion, STATE_FILE, BACKUP_DIR,
+  mirrorUrls, versionSources, fetchVersionRace, VERSION_TIMEOUT };

@@ -840,6 +840,9 @@
   // 登录页一次性提示（例如闲置自动退出）：由 showAuth 消费，避免依赖 setTimeout 与异步登出的竞态
   let authNotice = '';
   function dismissBootLoading() {
+    // 先撤掉 index.html 内联脚本打的 boot-app 类：它只是「JS 加载完之前的临时遮挡策略」，
+    // 撤掉后 #app-view 的显隐重新由 .hidden 控制，退出登录才能正常回到登录页。
+    document.documentElement.classList.remove('boot-app');
     const bl = $('boot-loading');
     if (bl) bl.remove();
   }
@@ -1017,7 +1020,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.2';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.4';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5198,6 +5201,37 @@
       box.innerHTML = '<div class="pv-up-card"><div class="pv-up-err">启动升级失败：' + esc(e.message || e) + '</div></div>';
     }
   }
+  // 版本文件多源读取（v1.8.4）：raw.githubusercontent.com 在部分机房会间歇性超时，
+  // 服务端已改为并发竞速；浏览器侧同样按 UPDATE_URL → UPDATE_MIRRORS 顺序兜底，各 8 秒超时。
+  function updateSourceList() {
+    const cfg = window.APP_CONFIG || {};
+    const out = [];
+    const push = (v) => { const s = String(v || '').trim(); if (s && out.indexOf(s) < 0) out.push(s); };
+    push(cfg.UPDATE_URL);
+    (Array.isArray(cfg.UPDATE_MIRRORS) ? cfg.UPDATE_MIRRORS : []).forEach(push);
+    return out;
+  }
+  async function fetchVersionJSON() {
+    const list = updateSourceList();
+    if (!list.length) throw new Error('未配置更新地址');
+    const errs = [];
+    for (const url of list) {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 8000);
+      try {
+        const r = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (!j || !j.version) throw new Error('版本文件缺少 version 字段');
+        return j;
+      } catch (e) {
+        let host = url;
+        try { host = new URL(url).host; } catch (_) {}
+        errs.push(host + ' → ' + (e.name === 'AbortError' ? '超时 8 秒' : (e.message || String(e))));
+      } finally { clearTimeout(t); }
+    }
+    throw new Error(errs.join('；'));
+  }
   async function checkForUpdate(curTag, box) {
     if (!box) return;
     stopUpgradePoll();
@@ -5217,13 +5251,9 @@
     } catch (e) {
       // 记下真实原因：旧服务端 404 / 非管理员 403 / 服务端拉不到版本文件 502
       backendErr = (e && e.message) || String(e || '');
-      // 后端接口不可用（旧版本服务端 / 非管理员 / 网络问题）→ 退回前端直读公开 version.json
+      // 后端接口不可用（旧版本服务端 / 非管理员 / 网络问题）→ 退回浏览器多源直读 version.json
       try {
-        const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
-        if (!url) throw new Error('未配置更新地址');
-        const r = await fetch(url, { cache: 'no-store' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        info = await r.json();
+        info = await fetchVersionJSON();
         latest = String(info.version || '').trim();
         if (!latest) throw new Error('版本文件缺少 version 字段');
         if (cmpVersion(latest, curTag) <= 0) {
@@ -5240,10 +5270,16 @@
     const canOneKey = !!(info && info.hasNew === true) && (info.admin !== false);
     const notes = String(info.notes || '').trim();
     const date = String(info.date || '').trim();
+    // v1.8.4：服务端所有源都失败时会用本地缓存顶上，这里必须说清楚「可能不是最新」
+    const cachedTip = (info && info.cached)
+      ? '<div class="pv-up-muted">⚠ 服务器此刻连不上版本文件，以下为上次缓存的信息' +
+        (info.cachedAt ? '（' + new Date(info.cachedAt).toLocaleString() + '）' : '') + '，可能不是最新。</div>'
+      : '';
     if (canOneKey) {
       box.innerHTML = '<div class="pv-up-card">' +
         '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
         (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
+        cachedTip +
         '<div class="pv-up-tip">点击后服务器自动下载、备份、覆盖并重启，期间网站短暂中断，数据不会丢失。</div>' +
         '<button type="button" class="btn primary" id="pv-up-onekey">一键升级到 ' + esc(latest) + '</button>' +
       '</div>';
@@ -5271,6 +5307,7 @@
             : '服务端检查更新失败：' + backendErr + '（以下为手动升级命令）')
         : '当前账号不是管理员，或服务端尚未开启一键升级';
       box.innerHTML = manualUpgradeCard(info, latest, tip);
+      if (cachedTip) box.insertAdjacentHTML('afterbegin', cachedTip);
       bindCopy(box, cmd);
     }
   }
@@ -5282,8 +5319,7 @@
   async function loadChangelog(force) {
     const box = $('about-timeline');
     if (!box) return;
-    const url = (window.APP_CONFIG && window.APP_CONFIG.UPDATE_URL || '').trim();
-    if (!url) {
+    if (!updateSourceList().length) {
       box.innerHTML = '<div class="cl-empty">未配置更新地址：在部署目录 config.js 填 UPDATE_URL 后即可显示版本更新记录。</div>';
       return;
     }
@@ -5312,9 +5348,7 @@
     if (_changelogCache && !force) { render(_changelogCache); return; }
     box.innerHTML = '<div class="cl-loading">正在加载更新记录…</div>';
     try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const info = await r.json();
+      const info = await fetchVersionJSON();
       const list = Array.isArray(info.changelog) ? info.changelog : [];
       _changelogCache = list;
       render(list);

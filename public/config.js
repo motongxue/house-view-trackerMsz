@@ -23,5 +23,13 @@ window.APP_CONFIG = {
   // Gitee 示例：https://gitee.com/你的账号/house-view-tracker/raw/main/version.json
   // GitHub 示例：https://raw.githubusercontent.com/你的账号/house-view-tracker/main/version.json
   // 已配置：仓库 motongxue/house-view-trackerMsz 的 version.json（同时供检查更新与关于页时间轴读取）
-  UPDATE_URL: 'https://raw.githubusercontent.com/motongxue/house-view-trackerMsz/main/version.json'
+  UPDATE_URL: 'https://raw.githubusercontent.com/motongxue/house-view-trackerMsz/main/version.json',
+
+  // 版本文件备用镜像（可选，数组，按顺序兜底）。
+  // 背景：部分机房直连 raw.githubusercontent.com 会间歇性 ETIMEDOUT，多给一条线成功率就上去了。
+  // 前端与后端都读这份清单；镜像只镜像仓库文件，所以能取 version.json，但取不了 56MB 的 Release 附件。
+  UPDATE_MIRRORS: [
+    'https://fastly.jsdelivr.net/gh/motongxue/house-view-trackerMsz@main/version.json',
+    'https://cdn.jsdelivr.net/gh/motongxue/house-view-trackerMsz@main/version.json'
+  ]
 };
