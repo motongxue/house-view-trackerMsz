@@ -1020,7 +1020,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.5';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.6';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5201,7 +5201,7 @@
       box.innerHTML = '<div class="pv-up-card"><div class="pv-up-err">启动升级失败：' + esc(e.message || e) + '</div></div>';
     }
   }
-  // 版本文件多源读取（v1.8.5）：raw.githubusercontent.com 在部分机房会间歇性超时，
+  // 版本文件多源读取（v1.8.6）：raw.githubusercontent.com 在部分机房会间歇性超时，
   // 服务端已改为并发竞速；浏览器侧同样按 UPDATE_URL → UPDATE_MIRRORS 顺序兜底，各 8 秒超时。
   function updateSourceList() {
     const cfg = window.APP_CONFIG || {};

@@ -114,15 +114,44 @@ async function fetchVersionRace(opt) {
   const abortAll = () => { ctrls.forEach((c) => { try { c.abort(); } catch (_) {} }); };
 
   let win = null;
-  try {
-    win = await new Promise((resolve, reject) => {
-      let left = list.length;
-      list.forEach((u) => {
-        attempt(u).then(resolve).catch(() => { if (--left === 0) reject(new Error('all-failed')); });
+  // v1.8.6：并发请求 + 取「版本号最大」的那份，而不是「谁先回用谁」（原先 Promise.race 的写法）。
+  //   原因：镜像 CDN 会把分支别名（@main）缓存住，推新版本后仍返回旧提交里的版本号；
+  //   若按"最快"取胜，快的旧缓存会盖掉慢但正确的主源——结果就是「明明有新版本却提示已是最新」。
+  //   策略：首个成功后仍留 GRACE 毫秒收尾（让同样快的源把结果交上来），再按语义化版本取最高。
+  const GRACE_MS = 1200;
+  const settled = [];
+  let closed = false;
+  let remaining = list.length;
+  let graceTimer = null;
+  let resolveAll;
+  const allDone = new Promise((r) => { resolveAll = r; });
+  const finish = () => { if (!closed) { closed = true; resolveAll(); } };
+
+  list.forEach((u) => {
+    attempt(u)
+      .then((v) => {
+        if (!closed) settled.push(v);
+        if (!graceTimer) graceTimer = setTimeout(finish, GRACE_MS);
+      })
+      .catch(() => {})
+      .finally(() => {
+        remaining -= 1;
+        if (remaining === 0) finish();
       });
-    });
-  } catch (_) { win = null; }
+  });
+
+  await Promise.race([allDone, new Promise((r) => setTimeout(r, timeoutMs + 200))]);
+  finish();
+  if (graceTimer) clearTimeout(graceTimer);
   abortAll();
+
+  if (settled.length) {
+    win = settled.reduce((a, b) => (cmpVersion(b.data.version, a.data.version) > 0 ? b : a));
+    if (settled.length > 1) {
+      const sig = settled.map((x) => hostOf(x.url) + '=' + x.data.version).join('，');
+      log('[upgrade] 多源版本不一致，已取最高：' + sig);
+    }
+  }
 
   if (win) {
     // 成功即落盘：下次全部源都挂时用它顶上

@@ -115,7 +115,7 @@ const Auth = (function () {
 
   // 浏览器密码管理器会把登录密码填进注册/重置的新密码框：只认真人输入，其余清空。
   // 注意：绝不清 auth-password（登录框）——那是「记住密码」靠浏览器自动填充回填的框，
-  // 清掉它会导致勾选记住密码后每次还要手输（v1.8.5 修复）。只清注册/重置的新密码框。
+  // 清掉它会导致勾选记住密码后每次还要手输（v1.8.6 修复）。只清注册/重置的新密码框。
   function scrubPasswords() {
     ['auth-new-password', 'auth-new-password2'].forEach((id) => {
       const i = el(id);

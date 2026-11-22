@@ -1,19 +1,24 @@
 {
-  "version": "v1.8.5",
+  "version": "v1.8.6",
   "date": "2026-11-22",
-  "notes": "版本文件主源切换到 Gitee，修复「明明有新版本却提示已是最新」：GitHub 的 CDN 会缓存 @main 指向旧提交，导致服务器读到的版本号比实际旧。现在优先读 Gitee，GitHub / jsDelivr 降为兜底。",
-  "package": "house-view-tracker-linux-x64_v1.8.5.tar.gz",
+  "notes": "修复多源取版本的逻辑缺陷：并发请求时按「版本号最大」取值，不再「谁先回用谁」——CDN 镜像返回旧缓存时会被正确的新版覆盖。",
+  "package": "house-view-tracker-linux-x64_v1.8.6.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.5/house-view-tracker-linux-x64_v1.8.5.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.5/house-view-tracker-linux-x64_v1.8.5.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.8.6/house-view-tracker-linux-x64_v1.8.6.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.6/house-view-tracker-linux-x64_v1.8.6.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
     {
+      "version": "v1.8.6",
+      "date": "2026-11-22",
+      "notes": "修复版本检测的排序缺陷：多源并发请求时不再「谁先返回用谁」，改为首个成功后再留 1.2 秒收尾、按语义化版本取最高。原先的写法会让 CDN 缓存返回的旧版本（响应更快）盖掉主源的正确版本，表现仍是「明明有新版本却提示已是最新」。"
+    },
+    {
       "version": "v1.8.5",
       "date": "2026-11-22",
-      "notes": "修复「检查更新误报已是最新」：版本文件主源由 GitHub raw 切换到 Gitee raw（GitHub / jsDelivr 降为兜底镜像），并放行 raw.giteeusercontent.com。根因是 GitHub 的 CDN 会把 @main 别名缓存住，推送新版本后仍返回旧提交里的版本号，导致服务器判定「远程不比本地新」。"
+      "notes": "修复「检查更新误报已是最新」：版本文件主源由 GitHub raw 切换到 Gitee raw（GitHub / jsDelivr 降为兜底镜像），并放行 raw.giteeusercontent.com。根因是 GitHub 的 CDN 会把 @main 别名缓存住，推送新版本后仍返回旧提交里的版本号。"
     },
     {
       "version": "v1.8.4",
