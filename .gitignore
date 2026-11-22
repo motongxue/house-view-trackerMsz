@@ -1,27 +1,10 @@
-# ============ 密钥 / 凭据（绝不能提交或随部署包分发）============
+# 运行时数据与密钥（绝不入库）
+data/
 .env
 .token-secret
-*.pem
-*.key
-
-# ============ 用户私有数据（不同步到仓库）============
-uploads/
-media/
-public/media/
+node_modules/
 *.log
 
-# ============ 依赖 ============
-node_modules/
-agent/.venv/
-agent/logs/
-__pycache__/
-*.pyc
-
-# ============ 构建/会话产物 ============
-.genie
-*.genie
-.wbapp_*.genie
-
-# ============ 开发产物（部署前清理）============
-screenshots/
-ai-test.html
+# 用户上传的房源图片 / 调试页（体积大且含隐私）
+public/media/
+public/ai-test.html
