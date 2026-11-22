@@ -1,0 +1,8 @@
+{
+  "version": "v1.5.0",
+  "date": "2026-11-22",
+  "notes": "新增「检查更新」按钮（设置→关于），可检测新版并给出升级命令；修复关于页显示两个 V；修复暗色模式下来源平台标签过于突出。",
+  "package": "house-view-tracker-linux-x64_v1.5.0.tar.gz",
+  "downloadUrl": "",
+  "installDir": "/data/house-view-tracker"
+}
