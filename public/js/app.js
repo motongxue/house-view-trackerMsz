@@ -1023,7 +1023,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.8';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.9.1';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5332,6 +5332,8 @@
   //   会出现「页头写 v1.8.6、时间轴却把 v1.8.5 标成当前版本」的自相矛盾。
   //   远程那份只在旧服务端（没有 /api/version）时作兜底。
   let _changelogCache = null;
+  let _clExpanded = null;        // null=跟随默认策略；true/false=用户手动展开/收起
+  const CL_COLLAPSE_AT = 3;      // v1.9.0：时间轴默认只列最近 3 条，其余收起
   async function loadChangelog(force) {
     const box = $('about-timeline');
     if (!box) return;
@@ -5349,12 +5351,12 @@
       const missing = (cur && curIdx < 0)
         ? '<div class="cl-empty">更新记录里暂时没有 ' + esc(cur) + ' 这一版的说明。</div>'
         : '';
-      box.innerHTML = missing + sorted.map((it, i) => {
+      const itemHTML = (it, i, isTail) => {
         const isCur = i === curIdx;
         const ver = String(it.version || '').trim();
         const date = String(it.date || '').trim();
         const notes = String(it.notes || '').trim();
-        return '<div class="cl-item' + (isCur ? ' is-latest' : '') + '">' +
+        return '<div class="cl-item' + (isCur ? ' is-latest' : '') + (isTail ? ' is-tail' : '') + '">' +
           '<div class="cl-head">' +
             '<span class="cl-ver">' + esc(ver) + '</span>' +
             (isCur ? '<span class="cl-tag">当前版本</span>' : '') +
@@ -5362,7 +5364,38 @@
           '</div>' +
           (notes ? '<p class="cl-notes">' + esc(notes) + '</p>' : '') +
         '</div>';
-      }).join('');
+      };
+      const canCollapse = sorted.length > CL_COLLAPSE_AT;
+      // 默认收起；但若「当前版本」被折在后面就默认展开，否则看不到自己这一版的标记
+      const expanded = canCollapse
+        ? (_clExpanded === null ? curIdx >= CL_COLLAPSE_AT : !!_clExpanded)
+        : true;
+      const visible = canCollapse ? sorted.slice(0, CL_COLLAPSE_AT) : sorted;
+      const hidden = canCollapse ? sorted.slice(CL_COLLAPSE_AT) : [];
+      // 连接线由每个圆点自己画一段（.cl-item::after），最后一条打 is-tail 不画，
+      // 线就正好停在最后一个圆点上，不会拖到「展开更多」按钮旁边。
+      // 折叠时可见的最后一条也要打 is-tail——否则那段线会连向被隐藏的第 4 条。
+      const lastIdx = sorted.length - 1;
+      const tailOnVisible = canCollapse && !expanded;
+      box.innerHTML = missing +
+        visible.map((it, i) => itemHTML(it, i, i === lastIdx || (tailOnVisible && i === visible.length - 1))).join('') +
+        (hidden.length
+          ? '<div class="cl-more-wrap' + (expanded ? ' is-open' : '') + '" id="cl-more-wrap">' +
+              hidden.map((it, i) => itemHTML(it, i + CL_COLLAPSE_AT, i === hidden.length - 1)).join('') + '</div>'
+          : '') +
+        (canCollapse
+          ? '<button type="button" class="cl-more-btn" id="cl-more-btn" aria-expanded="' +
+              (expanded ? 'true' : 'false') + '" aria-controls="cl-more-wrap">' +
+              '<span class="cl-more-label">' +
+                (expanded ? '收起' : '展开更多（还有 ' + hidden.length + ' 条）') +
+              '</span>' +
+              '<svg class="cl-more-arrow" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">' +
+                '<path d="M4 6.5l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+                'stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+            '</button>'
+          : '');
+      const btn = $('cl-more-btn');
+      if (btn) btn.onclick = () => { _clExpanded = !expanded; render(list, current); };
     };
     if (_changelogCache && !force) { render(_changelogCache.list, _changelogCache.current); return; }
     box.innerHTML = '<div class="cl-loading">正在加载更新记录…</div>';
