@@ -998,7 +998,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.1';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.2';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -5224,7 +5224,7 @@
       // 系统介绍：择隅是什么、能做什么、数据存在哪
       '<div class="about-intro">' +
         '<div class="ai-hero"><span class="ai-mark">🏠</span>' +
-          '<div class="ai-title"><b>择隅</b><span class="ai-slogan">择一隅　安此生</span><small>ZEYU · 一站式看房决策工具</small></div>' +
+          '<div class="ai-title"><b>择隅</b><span class="ai-slogan">择一隅　安此生</span></div>' +
         '</div>' +
         '<p class="ai-lead">从看房记录到购房决策，再到装修落地——把散落在记忆和聊天记录里的房源信息，收进一个只属于你自己的系统。</p>' +
         '<div class="ai-feats">' +

@@ -9,11 +9,11 @@
   <meta name="referrer" content="no-referrer" />
   <title>择隅 · 看房记录与对比</title>
   <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
-  <link rel="stylesheet" href="./css/tokens.css?v=v1.6.1" />
-  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.6.1" />
-  <link rel="stylesheet" href="./css/style.css?v=v1.6.1" />
+  <link rel="stylesheet" href="./css/tokens.css?v=v1.6.2" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.6.2" />
+  <link rel="stylesheet" href="./css/style.css?v=v1.6.2" />
   <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
-  <script src="./config.js?v=v1.6.1"></script>
+  <script src="./config.js?v=v1.6.2"></script>
 </head>
 <body>
   <!-- ============ 登录 / 注册（规范登录卡片） ============ -->
@@ -21,7 +21,7 @@
     <div class="auth-card">
       <!-- 左侧：看房相关内容 -->
       <div class="auth-hero">
-        <div class="auth-hero-brand"><span class="brand-name">🏠 择隅</span><span class="brand-slogan">择一隅　安此生</span></div>
+        <div class="auth-hero-brand"><div class="brand-name">🏠 择隅</div><div class="brand-slogan">择一隅　安此生</div></div>
         <h2 class="auth-hero-title">你的看房账本</h2>
         <p class="auth-hero-sub">记录、对比、收藏你看过的每一套房源，<br/>让购房决策不再只靠记忆。</p>
         <ul class="auth-hero-feats">
@@ -109,7 +109,7 @@
               <path d="M14 22.2 H26 M14 25.6 H26 M14 29 H21.5" stroke="#4a83e0" stroke-width="1.8" stroke-linecap="round" fill="none"/>
             </svg>
           </span>
-          <span class="zy-logo-text"><b>择隅</b><span class="logo-slogan">择一隅　安此生</span><small>ZEYU · HOUSE VIEW TRACKER</small></span>
+          <span class="zy-logo-text"><b>择隅</b><span class="logo-slogan">择一隅　安此生</span></span>
         </div>
         <div class="nav-item active" data-view="dashboard" title="看房驾驶"><span class="nav-ico">📊</span><span class="nav-label">看房驾驶</span></div>
         <div class="nav-item" data-view="plan" title="购房计划"><span class="nav-ico">🗓️</span><span class="nav-label">购房计划</span></div>
@@ -381,19 +381,19 @@
     </div>
   </div>
 
-  <script src="./js/api.js?v=v1.6.1"></script>
-  <script src="./js/auth.js?v=v1.6.1"></script>
-  <script src="./js/store.js?v=v1.6.1"></script>
-  <script src="./js/knowledge-data.js?v=v1.6.1"></script>
-  <script src="./js/reno-demo.js?v=v1.6.1"></script>
-  <script src="./js/geo.js?v=v1.6.1"></script>
-  <script src="./js/map.js?v=v1.6.1"></script>
-  <script src="./js/regions.js?v=v1.6.1"></script>
-  <script src="./js/app.js?v=v1.6.1"></script>
+  <script src="./js/api.js?v=v1.6.2"></script>
+  <script src="./js/auth.js?v=v1.6.2"></script>
+  <script src="./js/store.js?v=v1.6.2"></script>
+  <script src="./js/knowledge-data.js?v=v1.6.2"></script>
+  <script src="./js/reno-demo.js?v=v1.6.2"></script>
+  <script src="./js/geo.js?v=v1.6.2"></script>
+  <script src="./js/map.js?v=v1.6.2"></script>
+  <script src="./js/regions.js?v=v1.6.2"></script>
+  <script src="./js/app.js?v=v1.6.2"></script>
   <!-- 运行监控：设置弹窗里的登录日志 / 模型流量（只读，挂在 window.HvtMonitor） -->
-  <script src="./js/monitor.js?v=v1.6.1"></script>
+  <script src="./js/monitor.js?v=v1.6.2"></script>
   <!-- 装修设计：自研 3D 引擎（ES module，本地 Three.js，异步就绪后派发 floorplan:ready） -->
-  <script type="module" src="./js/floorplan-3d.js?v=v1.6.1"></script>
+  <script type="module" src="./js/floorplan-3d.js?v=v1.6.2"></script>
 
   <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
   <div id="aie-modal" class="modal hidden">

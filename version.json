@@ -1,11 +1,16 @@
 {
-  "version": "v1.6.1",
+  "version": "v1.6.2",
   "date": "2026-11-22",
-  "notes": "系统定名「择隅」，品牌位下方新增标语「择一隅 安此生」。",
-  "package": "house-view-tracker-linux-x64_v1.6.1.tar.gz",
+  "notes": "品牌位细节调整：侧边栏与关于页移除英文副标题、侧边栏标语缩小、登录页品牌名与标语改为上下结构。",
+  "package": "house-view-tracker-linux-x64_v1.6.2.tar.gz",
   "downloadUrl": "",
   "installDir": "/data/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.6.2",
+      "date": "2026-11-22",
+      "notes": "品牌位细节调整：侧边栏与关于页移除英文副标题、侧边栏标语缩小、登录页品牌名与标语改为上下结构。"
+    },
     {
       "version": "v1.6.1",
       "date": "2026-11-22",
