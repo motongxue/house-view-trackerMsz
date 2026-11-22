@@ -843,7 +843,20 @@
     const bl = $('boot-loading');
     if (bl) bl.remove();
   }
+  // 退出登录 / 令牌过期 / 闲置自动退出 → 回登录页时，必须把所有浮层一起收掉。
+  // 这些浮层都是 body 级 fixed 定位（z-index 远高于 auth-view），只隐藏 #app-view
+  // 会让设置弹窗、成交价弹窗、资料抽屉等直接浮在登录页上面。
+  function closeAllOverlays() {
+    document.querySelectorAll(
+      '.settings-modal-overlay.open, .cd-modal-overlay.open, .fu-drawer-overlay.open, .fu-drawer.open'
+    ).forEach((el) => el.classList.remove('open'));
+    // 知识库阅读器是 hidden + open 两态，两个都要复位
+    const kb = $('kb-modal');
+    if (kb) { kb.classList.remove('open'); kb.classList.add('hidden'); }
+    document.body.classList.remove('modal-open');
+  }
   function showAuth() {
+    closeAllOverlays(); // 先收浮层，再切视图，避免弹窗残留在登录页上
     $('auth-view').classList.remove('hidden');
     $('app-view').classList.add('hidden');
     dismissBootLoading(); // 登录态判断完成，撤掉启动遮罩
@@ -1004,7 +1017,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.1';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.8.2';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');

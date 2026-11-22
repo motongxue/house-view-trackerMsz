@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var VER = 'v1.8.1';
+  var VER = 'v1.8.2';
   var LIMIT = 20;
   var ACTION = {
     register: '注册', login_pwd: '密码登录', login_code: '验证码登录',

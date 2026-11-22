@@ -1,15 +1,20 @@
 {
-  "version": "v1.8.1",
+  "version": "v1.8.2",
   "date": "2026-11-22",
-  "notes": "修复「检查更新 502」看不出原因的问题：现在会把服务端真实错误（超时/连不上/证书等）直接显示在关于页，而不是笼统提示「不是管理员」；同时后端日志打印失败原因，便于排查。",
-  "package": "house-view-tracker-linux-x64_v1.8.1.tar.gz",
+  "notes": "修复：退出登录 / 令牌过期 / 闲置自动退出后，已打开的设置弹窗（以及成交价弹窗、资料抽屉）仍浮在登录页上。现在回登录页时会先关闭所有浮层。",
+  "package": "house-view-tracker-linux-x64_v1.8.2.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.1/house-view-tracker-linux-x64_v1.8.1.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.1/house-view-tracker-linux-x64_v1.8.1.tar.gz"
+    "https://gitee.com/motongxue/house-view-trackerMsz/releases/download/v1.8.2/house-view-tracker-linux-x64_v1.8.2.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.8.2/house-view-tracker-linux-x64_v1.8.2.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.8.2",
+      "date": "2026-11-22",
+      "notes": "修复退出登录后浮层残留：闲置自动退出、令牌过期或手动退出时，已打开的设置弹窗、历史成交价弹窗、资料抽屉会一直浮在登录页上；现在回到登录页前统一关闭所有浮层并复位滚动锁。"
+    },
     {
       "version": "v1.8.1",
       "date": "2026-11-22",

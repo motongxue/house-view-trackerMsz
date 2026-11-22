@@ -351,12 +351,12 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
 <div id="toast"></div>
 
 <!-- HVT 扩展：内置户型包（本地纯数据，零外部请求；缺文件时自动回退原始三室两厅） -->
-<script src="./js/floorplan-layouts.js?v=v1.8.1"></script>
+<script src="./js/floorplan-layouts.js?v=v1.8.2"></script>
 <!-- HVT 扩展：外部户型方案导入（JSON / 技能 HTML / 技能 ZIP → HouseSpec → 本页几何） -->
-<script src="./js/vendor/jszip.min.js?v=v1.8.1"></script>
-<script src="./js/house-spec-convert.js?v=v1.8.1"></script>
-<script src="./js/floorplan-import-spec.js?v=v1.8.1"></script>
-<script src="./js/floorplan-auto-furnish.js?v=v1.8.1"></script>
+<script src="./js/vendor/jszip.min.js?v=v1.8.2"></script>
+<script src="./js/house-spec-convert.js?v=v1.8.2"></script>
+<script src="./js/floorplan-import-spec.js?v=v1.8.2"></script>
+<script src="./js/floorplan-auto-furnish.js?v=v1.8.2"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -1600,7 +1600,7 @@ window.__hvtApplyInternalState = function(s){
   toast(tr('方案已导入', 'Plan imported') + (s.WALLS ? tr('（含户型几何）', ' (with geometry)') : ''));
   return true;
 };
-$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v1.8.1', 'hvt_editor', 'width=1280,height=920');
+$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v1.8.2', 'hvt_editor', 'width=1280,height=920');
 $('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; window.__hvtImportedSpec = false;
   if (window.__hvtBrand0){ const bd = document.querySelector('.brand b'); if (bd){ bd.dataset.zh = window.__hvtBrand0.zh; bd.dataset.en = window.__hvtBrand0.en; applyStaticLang(); } }
   commit(b); renderAll(); } };
