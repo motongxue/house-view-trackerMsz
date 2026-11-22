@@ -1,15 +1,20 @@
 {
-  "version": "v1.9.1",
+  "version": "v1.10.0",
   "date": "2026-11-22",
-  "notes": "修复「版本更新记录」圆点之间没有连接线：竖线的颜色误用了 border 简写变量，生成了非法背景值被整条丢弃，浅色主题下等于透明（深色主题因另有覆盖才看得见）。现改为每个圆点各自画一段连接线，最后一条不画，线正好停在最后一个圆点上。",
-  "package": "house-view-tracker-linux-x64_v1.9.1.tar.gz",
+  "notes": "装修设计页面默认进「高级设计」（AI 识别户型 / 3D 漫游 / 水电点位），顶栏新增「基础」按钮，点一下切回原来的 3D 户型布置页；基础页里的按钮变成「高级设计」可随时切回。",
+  "package": "house-view-tracker-linux-x64_v1.10.0.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.9.1/house-view-tracker-linux-x64_v1.9.1.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.9.1/house-view-tracker-linux-x64_v1.9.1.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.10.0/house-view-tracker-linux-x64_v1.10.0.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.10.0/house-view-tracker-linux-x64_v1.10.0.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.10.0",
+      "date": "2026-11-22",
+      "notes": "装修设计页面改为默认显示「高级设计」（AI 识别户型 / 3D 漫游 / 水电点位的设计器），顶栏加了一个「基础」按钮，点它切回原来的 3D 户型布置页；在基础页里这个按钮变成「高级设计」，可以随时切回去。切到基础页之前会把还没保存的布置自动写回房源；高级模式下「房型」下拉自动收起（那个只对基础页有意义），顶栏提示语也跟着变成当前模式的说明。"
+    },
     {
       "version": "v1.9.1",
       "date": "2026-11-22",

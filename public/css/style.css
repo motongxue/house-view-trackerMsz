@@ -2133,6 +2133,9 @@ body.dark .email-dev-hint { color: #e0b25a; }
 .fp-prop-bar select:focus { border-color: var(--primary); }
 .fp-prop-bar select:disabled { opacity: .6; }
 .fp-up-hint { font-size: var(--fs-12); color: var(--muted); }
+/* 高级设计模式下隐藏「房型」（只对基础布置页有意义）；
+   顶栏子项若被别的规则给了 display，hidden 会被盖掉，这里显式兜一层 */
+.fp-prop-bar [hidden] { display: none !important; }
 .fp-prop-bar .fp-state { margin-left: auto; }
 .fp-embed-stage { flex: 1; min-height: 0; }
 .fp-embed-stage .fp-loading {
@@ -2141,8 +2144,8 @@ body.dark .email-dev-hint { color: #e0b25a; }
 @media (max-width: 760px) {
   .fp-up-hint { display: none; }
   .fp-prop-bar .fp-state { margin-left: 0; }
-  /* 高级设计按钮始终靠最右（小屏下由按钮自身吃掉剩余空间） */
-  .fp-prop-bar #fp-up-advanced { margin-left: auto; }
+  /* 模式切换按钮始终靠最右（小屏下由按钮自身吃掉剩余空间） */
+  .fp-prop-bar #fp-mode-btn { margin-left: auto; }
 }
 
 /* ============================================================

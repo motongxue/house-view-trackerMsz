@@ -970,6 +970,16 @@
   let fpUpDirty = false;
   let fpUpStorageHandler = null;
 
+  /* 装修设计两种模式（v1.10.0）：
+     advanced = 高级设计器 floorplan-designer.html（AI 识别户型 / 3D 漫游 / 水电点位）
+     basic    = 原来的默认页 floorplan.html（上游 3D 户型 + 家具布置，方案存房源）
+     进装修设计默认走 advanced；顶栏「基础」按钮可切到 basic，basic 里按钮变「高级设计」切回。
+     只用模块级变量记：同一次会话里切到别的视图再回来，仍停在用户最后选的模式；
+     刷新页面回落默认（高级设计）。 */
+  const FP_MODE_ADVANCED = 'advanced';
+  const FP_MODE_BASIC = 'basic';
+  let fpMode = FP_MODE_ADVANCED;
+
   function fpUpProp() {
     return (state.properties || []).find((p) => p.id === fpUpPropId) || null;
   }
@@ -1023,10 +1033,16 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.9.1';
-    f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
+    if (fpMode === FP_MODE_ADVANCED) {
+      // 高级设计器只认同源 localStorage['hvt-design-spec'] 或 ?spec=，不读下面的布置方案管道
+      f.title = '装修设计 · 高级设计';
+      f.src = fpAdvancedUrl();
+    } else {
+      f.title = '装修设计 · 3D 户型';
+      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.0';
+    }
     stage.appendChild(f);
   }
   // 把管道里当前方案写回指定房源；不传则用当前选中房源
@@ -1092,6 +1108,47 @@
     window.addEventListener('storage', fpUpStorageHandler);
   }
 
+  /* ---------- 模式切换（高级设计 ⇄ 基础布置） ---------- */
+  function fpModeIsAdvanced() { return fpMode === FP_MODE_ADVANCED; }
+  // 顶栏状态文案：高级模式没有「保存到房源」这回事，别复用那句提示
+  function fpRefreshBar() {
+    if (fpModeIsAdvanced()) { fpUpBar('高级设计模式', ''); return; }
+    fpUpBar(fpUpPropId ? '✅ 方案随房源保存' : '未关联房源（仅演示）', fpUpPropId ? 'saved' : '');
+  }
+  // 按当前模式刷新顶栏：按钮文案、房型下拉显隐、提示语
+  function fpSyncModeUi() {
+    const adv = fpModeIsAdvanced();
+    const btn = $('fp-mode-btn');
+    if (btn) btn.textContent = adv ? '基础' : '高级设计';
+    // 房型下拉只对基础布置页有效（高级设计器的户型来自 hvt-design-spec），高级模式下藏起来
+    const lab = $('fp-up-layout-label');
+    const laySel = $('fp-up-layout-sel');
+    if (lab) lab.hidden = adv;
+    if (laySel) laySel.hidden = adv;
+    const hint = $('fp-up-hint');
+    if (hint) {
+      hint.textContent = adv
+        ? '改动存在本机浏览器'
+        : '方案自动保存到所选房源，换设备登录仍在';
+    }
+    fpRefreshBar();
+  }
+  async function fpSwitchMode(next) {
+    if (next === fpMode) return;
+    // 离开基础页：先把还没写回服务端的布置改动补存一次，再摘掉同源管道监听
+    if (fpUpTimer) { clearTimeout(fpUpTimer); fpUpTimer = null; }
+    if (!fpModeIsAdvanced() && fpUpDirty && fpUpPropId) await fpUpFlush(fpUpPropId);
+    fpUpTeardown(false);
+    if (state.view !== 'floorplan' || !$('fp-up-stage')) return; // 等待期间已切走
+    fpMode = next;
+    if (!fpModeIsAdvanced()) {
+      fpUpSeed(fpUpProp());   // 进基础页前按当前房源把服务端方案预置进管道
+      fpUpWatch();
+    }
+    fpSyncModeUi();
+    fpUpCreateFrame();
+  }
+
   async function renderFloorplanUpstream(c) {
     destroyFloorplan(); // 清自研引擎，并补写上一轮尚未同步的改动
     const layoutOpts = FP_LAYOUTS.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
@@ -1100,13 +1157,13 @@
         <div class="fp-prop-bar">
           <label for="fp-up-prop-sel">关联房源</label>
           <select id="fp-up-prop-sel" disabled><option>加载中…</option></select>
-          <label for="fp-up-layout-sel">房型</label>
+          <label for="fp-up-layout-sel" id="fp-up-layout-label">房型</label>
           <select id="fp-up-layout-sel">${layoutOpts}</select>
-          <span class="fp-up-hint">方案自动保存到所选房源，换设备登录仍在</span>
+          <span class="fp-up-hint" id="fp-up-hint">方案自动保存到所选房源，换设备登录仍在</span>
           <span class="fp-state" id="fp-up-state">正在加载…</span>
-          <button type="button" class="btn" id="fp-up-advanced">高级设计</button>
+          <button type="button" class="btn" id="fp-mode-btn">基础</button>
         </div>
-        <div class="fp-embed-stage" id="fp-up-stage"><div class="fp-loading">正在加载 3D 户型…</div></div>
+        <div class="fp-embed-stage" id="fp-up-stage"><div class="fp-loading">正在加载设计页面…</div></div>
       </div>`;
     try { await ensureProperties(); } catch (e) { /* 后端不可用时降级为纯演示 */ }
     if (state.view !== 'floorplan' || !$('fp-up-stage')) return; // 加载期间已切走，别覆盖别的页面
@@ -1129,9 +1186,15 @@
       fpUpDirty = false;
       fpUpLayout = fpUpLayoutOf(fpUpProp());   // 每个房源记住自己的房型
       laySel.value = fpUpLayout;
+      if (fpModeIsAdvanced()) {
+        // 高级设计器不认 propId，换房源时别重载 iframe（会冲掉正在编辑的户型）；
+        // 切到「基础」时才按新房源预置布置方案
+        fpRefreshBar();
+        return;
+      }
       fpUpSeed(fpUpProp());
       fpUpCreateFrame();
-      fpUpBar(fpUpPropId ? '✅ 方案随房源保存' : '未关联房源（仅演示）', fpUpPropId ? 'saved' : '');
+      fpRefreshBar();
     };
     laySel.onchange = async (e) => {
       const next = e.target.value;
@@ -1145,18 +1208,20 @@
       if (!fpUpPropId) fpUpBar('未关联房源（仅演示）', '');
       await fpUpPersistLayout(); // 立刻把房型 id 存到房源，刷新不会回退
     };
-    fpUpSeed(fpUpProp());
+    const modeBtn = $('fp-mode-btn');
+    if (modeBtn) {
+      modeBtn.onclick = () => fpSwitchMode(fpModeIsAdvanced() ? FP_MODE_BASIC : FP_MODE_ADVANCED);
+    }
+    // 默认高级设计：只建 iframe，不挂基础页的 localStorage 布置管道
+    if (!fpModeIsAdvanced()) { fpUpSeed(fpUpProp()); fpUpWatch(); }
+    fpSyncModeUi();
     fpUpCreateFrame();
-    fpUpWatch();
-    fpUpBar(fpUpPropId ? '✅ 方案随房源保存' : '未关联房源（仅演示）', fpUpPropId ? 'saved' : '');
-    const advBtn = $('fp-up-advanced');
-    if (advBtn) advBtn.onclick = () => window.open(fpAdvancedUrl(), '_blank');
   }
 
-  // 「高级设计」按钮：永远直接进 3D 设计器（AI 体检面板在那儿）。
-  // 需要（重新）生成方案时，从设计器里 AI 面板的「上传户型图」入口进识别页。
+  // 高级设计器地址：设计器只读同源 localStorage['hvt-design-spec'] / ?spec=，
+  // propId 仅作排障标记保留；需要（重新）生成方案时从设计器里 AI 面板的「上传户型图」入口进识别页。
   function fpAdvancedUrl() {
-    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '');
+    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.0';
   }
 
   // 统一入口：离开本视图时 renderView 会调 destroyFloorplan()（同时清理同源同步监听）
