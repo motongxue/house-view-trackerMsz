@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "云庐 · 房源采集",
+  "name": "择隅 · 房源采集",
   "version": "1.5.0",
-  "description": "在安居客楼盘页、贝壳二手房详情页自动采集房源信息，导出为云庐系统可直接导入的 CSV，或一键推送到本机 / 远程云庐系统。",
+  "description": "在安居客楼盘页、贝壳二手房详情页自动采集房源信息，导出为择隅系统可直接导入的 CSV，或一键推送到本机 / 远程择隅系统。",
   "permissions": ["storage", "scripting", "activeTab", "tabs", "downloads"],
   "host_permissions": [
     "https://m.anjuke.com/*",
@@ -15,7 +15,7 @@
   "background": { "service_worker": "background.js" },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "云庐采集"
+    "default_title": "择隅采集"
   },
   "content_scripts": [
     {

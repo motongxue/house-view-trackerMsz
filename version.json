@@ -1,15 +1,20 @@
 {
-  "version": "v1.6.0",
+  "version": "v1.6.1",
   "date": "2026-11-22",
-  "notes": "系统正式更名「云庐」；关于页新增系统介绍与版本更新记录（纵向时间轴）。",
-  "package": "house-view-tracker-linux-x64_v1.6.0.tar.gz",
+  "notes": "系统定名「择隅」，品牌位下方新增标语「择一隅 安此生」。",
+  "package": "house-view-tracker-linux-x64_v1.6.1.tar.gz",
   "downloadUrl": "",
   "installDir": "/data/house-view-tracker",
   "changelog": [
     {
+      "version": "v1.6.1",
+      "date": "2026-11-22",
+      "notes": "系统定名「择隅」；登录页、侧边栏、关于页三处品牌位下方新增标语「择一隅 安此生」。"
+    },
+    {
       "version": "v1.6.0",
       "date": "2026-11-22",
-      "notes": "系统正式更名「云庐」（界面/插件/导出/文档统一）。关于页新增系统介绍卡片与版本更新记录时间轴。"
+      "notes": "关于页新增系统介绍卡片与版本更新记录时间轴（纵向、语义化排序、首条标当前版本）；界面/插件/导出/文档完成品牌统一。"
     },
     {
       "version": "v1.5.0",

@@ -1,5 +1,5 @@
 /* ============================================================
-   云庐 · 业务样式
+   择隅 · 业务样式
    设计变量统一取自 ui 规范 tokens.css（单一取值源），禁止写死颜色/像素。
    间距遵循 8 基准：4 / 8 / 16 / 24 / 32 / 48 / 64 / 80。
    圆角：按钮/输入 4px，卡片/区块 8px。阴影采用规范三层。
@@ -162,6 +162,7 @@ body.dark .hv-dl-chip.is-over { background: rgba(205, 24, 1, .16); border-color:
 .zy-logo-mark svg { width: 100%; height: 100%; display: block; }
 .zy-logo-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .zy-logo-text b { font-size: 15px; font-weight: 700; letter-spacing: .6px; color: var(--text); white-space: nowrap; }
+.zy-logo-text .logo-slogan { margin-top: 3px; font-size: 10px; letter-spacing: 2px; color: var(--primary); white-space: nowrap; }
 .zy-logo-text small { margin-top: 4px; font-size: 9px; letter-spacing: 1.1px; color: var(--text-3); white-space: nowrap; }
 .zy-sidebar.collapsed .zy-logo { justify-content: center; margin-left: -8px; margin-right: -8px; padding: 0 8px; }
 .zy-sidebar.collapsed .zy-logo-text { display: none; }
@@ -834,7 +835,9 @@ body.dark .utabs .tab.active { color: var(--primary); border-bottom-color: var(-
 .auth-hero { flex: 1 1 46%; padding: 46px 42px; color: #fff; display: flex; flex-direction: column; background: linear-gradient(150deg, #1c5fe0 0%, #3a8bff 55%, #57c8e8 100%); position: relative; overflow: hidden; }
 .auth-hero::before { content: ''; position: absolute; right: -70px; top: -70px; width: 220px; height: 220px; border-radius: 50%; background: rgba(255, 255, 255, .12); }
 .auth-hero::after { content: ''; position: absolute; right: 40px; bottom: -90px; width: 180px; height: 180px; border-radius: 50%; background: rgba(255, 255, 255, .08); }
-.auth-hero-brand { font-size: 15px; font-weight: 600; opacity: .95; position: relative; z-index: 1; }
+.auth-hero-brand { display: flex; flex-direction: column; gap: 5px; position: relative; z-index: 1; }
+.auth-hero-brand .brand-name { font-size: 17px; font-weight: 600; opacity: .95; }
+.auth-hero-brand .brand-slogan { font-size: 12px; font-weight: 400; letter-spacing: 3px; opacity: .8; }
 .auth-hero-title { font-size: 30px; line-height: 1.3; margin: 20px 0 12px; font-weight: 700; position: relative; z-index: 1; }
 .auth-hero-sub { font-size: 14px; line-height: 1.7; opacity: .9; margin: 0 0 24px; position: relative; z-index: 1; }
 .auth-hero-feats { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 18px; flex: 1; position: relative; z-index: 1; }
@@ -1148,6 +1151,7 @@ body.dark #kb-note-title::placeholder, body.dark #kb-note-content::placeholder {
 }
 .about-intro .ai-title { display: flex; flex-direction: column; gap: 3px; }
 .about-intro .ai-title b { font-size: 22px; letter-spacing: 2px; color: var(--text); }
+.about-intro .ai-title .ai-slogan { font-size: var(--fs-13); letter-spacing: 3px; color: var(--primary); }
 .about-intro .ai-title small { font-size: var(--fs-12); color: var(--muted); letter-spacing: .5px; }
 .about-intro .ai-lead { margin: 14px 0 16px; font-size: var(--fs-13); line-height: 1.7; color: var(--text-2); }
 .about-intro .ai-feats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

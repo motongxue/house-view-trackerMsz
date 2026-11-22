@@ -80,7 +80,7 @@ module.exports = {
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
-    fromName: process.env.SMTP_FROM_NAME || '云庐'
+    fromName: process.env.SMTP_FROM_NAME || '择隅'
   },
   // 仅本地开发用：不连 SMTP，把验证码打印到服务端控制台以便跑通全流程。生产严禁开启。
   emailDevLog: String(process.env.EMAIL_DEV_LOG || '') === 'true',

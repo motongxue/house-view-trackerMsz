@@ -809,7 +809,7 @@
     const el = $('hv-page-name');
     if (!el) return;
     if (name === 'form') { el.textContent = state.editing ? '编辑房源' : '录入房源'; return; }
-    el.textContent = VIEW_TITLES[name] || '云庐';
+    el.textContent = VIEW_TITLES[name] || '择隅';
   }
   function loadSavedView() {
     try {
@@ -998,7 +998,7 @@
     stage.innerHTML = ''; // 移除旧 iframe：DOM 一摘，WebGL / RAF 由浏览器释放
     const f = document.createElement('iframe');
     f.className = 'fp-embed';
-    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.0';
+    f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.6.1';
     f.title = '装修设计 · 3D 户型';
     f.setAttribute('allow', 'fullscreen; pointer-lock');
     f.setAttribute('referrerpolicy', 'no-referrer');
@@ -1432,7 +1432,7 @@
     const orientations = all.map((p) => (p.attributes && p.attributes.orientation) || '');
     const floors = all.map((p) => (p.attributes && p.attributes.floor) || '');
     const pickCount = state.pickMode === 'compare' ? state.selected.size : state.batchSel.size;
-    const head = crumb(['云庐', '房源列表']) + `<div class="section-head"><h2>已记录房源（${all.length}${shown.length !== all.length ? '，筛选后 ' + shown.length : ''}）</h2>
+    const head = crumb(['择隅', '房源列表']) + `<div class="section-head"><h2>已记录房源（${all.length}${shown.length !== all.length ? '，筛选后 ' + shown.length : ''}）</h2>
       <div class="spacer"></div>
       <span class="dd">
         <button class="btn primary" id="add-new">+ 录入</button>
@@ -2551,7 +2551,7 @@
     c.innerHTML = '<div class="empty">加载中…</div>';
     let list;
     try { list = await Store.trash(); } catch (e) { c.innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>'; return; }
-    const head = crumb(['云庐', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div>${viewModeBtn('trash-view-mode')}<button class="btn" id="trash-back">返回列表</button></div>`;
+    const head = crumb(['择隅', '回收站']) + `<div class="section-head"><h2>回收站</h2><div class="spacer"></div>${viewModeBtn('trash-view-mode')}<button class="btn" id="trash-back">返回列表</button></div>`;
     const bindCommon = () => {
       watchCardsCenter();
       const t = document.getElementById('trash-back'); if (t) t.onclick = () => setView('list');
@@ -2784,7 +2784,7 @@
   function doExportCsv() {
     const list = state.properties;
     if (!list.length) { toast('没有可导出的数据'); return; }
-    downloadCsv('云庐_' + new Date().toISOString().slice(0, 10) + '.csv', toCsv(list));
+    downloadCsv('择隅_' + new Date().toISOString().slice(0, 10) + '.csv', toCsv(list));
     toast('已导出 ' + list.length + ' 条 CSV', true);
   }
 
@@ -2803,7 +2803,7 @@
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = '云庐_完整数据_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.download = '择隅_完整数据_' + new Date().toISOString().slice(0, 10) + '.json';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast('已导出 ' + list.length + ' 条完整数据（JSON）', true);
@@ -2963,7 +2963,7 @@
     // 未启用 / 未配置 Key：不尝试加载在线地图，直接给出引导 + 一键进设置
     if (!mapEnabled() || !Geo.hasKey()) {
       const off = !mapEnabled();
-      c.innerHTML = crumb(['云庐', '地图分布']) +
+      c.innerHTML = crumb(['择隅', '地图分布']) +
         '<div class="section-head"><h2>地图分布</h2></div>' +
         '<div class="map-guide">' +
           '<div class="mg-ico">' + (off ? '🗺️' : '🔑') + '</div>' +
@@ -2980,7 +2980,7 @@
     }
     const dest = state.commuteDest;
     c.innerHTML = `
-      ${crumb(['云庐', '地图分布'])}
+      ${crumb(['择隅', '地图分布'])}
       <div class="section-head"><h2>地图分布</h2><div class="spacer"></div>
         <span class="muted">共 ${state.properties.length} 套，已定位 ${state.properties.filter((p) => p.geo && p.geo.lng).length} 套</span>
       </div>
@@ -3093,7 +3093,7 @@
     if (state.compareTab === 'renovation') { renderRenoCompare(c, tabs, bindCTabs); return; }
     const items = state.properties.filter((p) => state.selected.has(p.id));
     if (items.length < 2) {
-      c.innerHTML = crumb(['云庐', '房源对比']) + tabs + `<div class="cmp-empty">
+      c.innerHTML = crumb(['择隅', '房源对比']) + tabs + `<div class="cmp-empty">
         <div class="cmp-empty-ico">⚖️</div>
         <h3>还没有可对比的房源</h3>
         <p>请在房源列表里勾选至少 2 套房源，再回来查看横向对比。</p>
@@ -3137,7 +3137,7 @@
       ['配套备注', (p) => (p.facilities && p.facilities.notes) || '—'],
       ['备注', (p) => p.notes || '—']
     ];
-    let html = crumb(['云庐', '房源对比']) + tabs + '<div class="section-head"><h2>房源对比（' + items.length + '）</h2><div class="spacer"></div>' +
+    let html = crumb(['择隅', '房源对比']) + tabs + '<div class="section-head"><h2>房源对比（' + items.length + '）</h2><div class="spacer"></div>' +
       '<button class="btn" id="cmp-clear">清空选择</button></div><div style="overflow:auto"><table class="cmp-table"><thead><tr><th>字段</th>';
     items.forEach((p) => { html += '<th>' + esc(p.title || (p.location && p.location.community) || '未命名') + '</th>'; });
     html += '</tr></thead><tbody>';
@@ -3159,7 +3159,7 @@
     const rowsAll = renoRowsOf();
     const sel = rowsAll.filter((r) => state.renoCompareSel.has(renoKey(r)));
     if (sel.length < 2) {
-      c.innerHTML = crumb(['云庐', '房源对比']) + tabs + `<div class="cmp-empty">
+      c.innerHTML = crumb(['择隅', '房源对比']) + tabs + `<div class="cmp-empty">
         <div class="cmp-empty-ico">🔨</div>
         <h3>还没有可对比的装修方案</h3>
         <p>请到「装修列表」勾选至少 2 条报价方案，再点「对比选中」。</p>
@@ -3212,7 +3212,7 @@
       ['图片附件', (it) => RENO_MEDIA_META.reduce((s, mm) => s + ((it.media && it.media[mm.k]) || []).length, 0) + ' 张'],
       ['踩坑备忘', (it) => cell(it.notes)]
     ];
-    let html = crumb(['云庐', '房源对比']) + tabs +
+    let html = crumb(['择隅', '房源对比']) + tabs +
       `<div class="section-head"><h2>装修对比（${sel.length}）</h2><div class="spacer"></div>
         <button class="btn" id="rc-clear">清空选择</button>
         <button class="btn" id="rc-back">返回装修列表</button></div>
@@ -3254,7 +3254,7 @@
 
     c.innerHTML = `
       <div class="section-head">
-        ${crumb(['云庐', id ? '编辑房源' : '录入房源'])}
+        ${crumb(['择隅', id ? '编辑房源' : '录入房源'])}
         <div class="spacer"></div><button class="btn" id="back-list">返回列表</button></div>
       ${!Geo.hasKey() ? '<div class="warn">提示：当前未配置高德 Key，地图与自动定位不可用；你仍可填写其余字段，位置稍后在配置了 Key 后补，或用下方“点击地图补点”（需 Key）。</div>' : ''}
       <div class="form-layout">
@@ -4494,7 +4494,7 @@
         <button class="btn primary" id="d-reno-edit">✏️ 编辑装修信息</button>
       </span>` : '';
     c.innerHTML = `
-      ${crumb(['云庐', '房源详情'])}
+      ${crumb(['择隅', '房源详情'])}
       <div class="section-head"><h2>${esc(p.title || loc.community || '房源详情')}</h2>
         ${detailTabs}
         ${bought ? '' : `<div class="detail-status">${stChip}</div>`}
@@ -5042,7 +5042,7 @@
     const dm = u.demand || {};
     const bv = buildInfo();
     c.innerHTML =
-      crumb(['云庐', '设置']) +
+      crumb(['择隅', '设置']) +
       // 布局：左侧分类导航 + 右侧内容卡片。只切换显示，不改字段 / 文案 / 保存行为。
       '<div class="settings-layout" id="settings-layout">' +
         '<aside class="settings-sidebar">' +
@@ -5221,10 +5221,10 @@
       '</div>' +
             '</section>' +
             '<section class="settings-panel" data-panel="about" hidden>' +
-      // 系统介绍：云庐是什么、能做什么、数据存在哪
+      // 系统介绍：择隅是什么、能做什么、数据存在哪
       '<div class="about-intro">' +
         '<div class="ai-hero"><span class="ai-mark">🏠</span>' +
-          '<div class="ai-title"><b>云庐</b><small>YUNLU · 一站式看房决策工具</small></div>' +
+          '<div class="ai-title"><b>择隅</b><span class="ai-slogan">择一隅　安此生</span><small>ZEYU · 一站式看房决策工具</small></div>' +
         '</div>' +
         '<p class="ai-lead">从看房记录到购房决策，再到装修落地——把散落在记忆和聊天记录里的房源信息，收进一个只属于你自己的系统。</p>' +
         '<div class="ai-feats">' +
@@ -5240,7 +5240,7 @@
       // 版本信息：独立分组，不参与其它分组的排布
       '<div class="profile-version">' +
         '<span class="pv-mark">🏠</span>' +
-        '<div class="pv-main"><b>云庐</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
+        '<div class="pv-main"><b>择隅</b><span>本地部署 · Node.js + PostgreSQL · 数据仅自己可见</span></div>' +
         '<div class="pv-meta"><span>版本 <b>' + esc(bv.tag) + '</b></span><span>构建于 ' + esc(bv.date) + '</span>' +
           '<button type="button" class="btn pv-up-btn" id="pv-check-update" title="检查是否有新版本">检查更新</button></div>' +
         '<div class="pv-update" id="pv-update" hidden></div>' +
