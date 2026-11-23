@@ -5,7 +5,8 @@
  * 字段清单唯一来源仍是系统的 public/js/property-schema.json（由 background 注入 core）。
  */
 (function (root, factory) {
-  var isNode = (typeof module !== 'undefined' && module.exports);
+  // F133：显式布尔值，既用于判断环境也用于导出，避免把 module.exports 对象当标志位
+  const isNode = typeof module !== 'undefined' && !!module.exports;
   var CORE = isNode ? require('./core.js') : (root && root.HVT_CORE);
   var ANJUKE = isNode ? require('./sites/anjuke.js') : (root && root.HVT_SITE_ANJUKE);
   var BEIKE = isNode ? require('./sites/beike.js') : (root && root.HVT_SITE_BEIKE);

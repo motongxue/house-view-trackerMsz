@@ -14,17 +14,28 @@
  * 点「清除示例方案」可一次删干净。所有示例方案 id 以 demo_rn_ 开头，不会碰到自建方案。
  */
 (function () {
-  var PHASES = ['拆改', '水电', '泥瓦', '木工', '油漆', '安装', '软装进场'];
-  var PAY_4 = '开工 30% → 水电验收 30% → 泥木/主材安装 35% → 竣工验收 5% 尾款（入住 3-6 个月后付清）；合同写明增项不超过总价 5%，无业主签字变更单不计费。';
-  var PAY_PKG = '定金 10% → 开工 20% → 水电验收 30% → 主材安装完 35% → 竣工验收 5% 尾款；尾款压到 5%，不接受签约付 60% 以上。';
+  const PHASES = ['拆改', '水电', '泥瓦', '木工', '油漆', '安装', '软装进场'];
+  const PAY_4 = '开工 30% → 水电验收 30% → 泥木/主材安装 35% → 竣工验收 5% 尾款（入住 3-6 个月后付清）；合同写明增项不超过总价 5%，无业主签字变更单不计费。';
+  const PAY_PKG = '定金 10% → 开工 20% → 水电验收 30% → 主材安装完 35% → 竣工验收 5% 尾款；尾款压到 5%，不接受签约付 60% 以上。';
 
   // 主材简写：[品类, 品牌, 型号/规格, 数量, 单价(元), 金额(元), 渠道, 已到货]
   function mats(rows) {
     return (rows || []).map(function (r) {
-      return { category: r[0], brand: r[1], model: r[2], qty: r[3], unitPrice: r[4], amount: r[5], channel: r[6], arrived: !!r[7] };
-    });
+      // F223: 校验行是数组且尾部字段给默认值，避免缺字段时渲染出含 undefined 的坏行
+      if (!Array.isArray(r)) return null;
+      return {
+        category: r[0] || '', brand: r[1] || '', model: r[2] || '', qty: r[3] || '',
+        unitPrice: r[4] || 0, amount: r[5] || 0,
+        channel: r[6] || '',
+        // F086: 套餐内条目显式标记 included，成本聚合可据此排除，不再靠 0 价格隐含判断
+        included: r[6] === '套餐内',
+        arrived: !!r[7]
+      };
+    }).filter(Boolean);
   }
   function mk(o) {
+    // F085: guard o，缺参时给出安全默认，避免 o.progress / o.name 访问抛错
+    o = o || {};
     var pm = o.progress || {};
     return {
       id: 'demo_rn_' + o.id,

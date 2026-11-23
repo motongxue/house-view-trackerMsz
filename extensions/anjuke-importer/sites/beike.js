@@ -58,18 +58,22 @@
       var agents = (Array.isArray(g.agentList) ? g.agentList : []).map(function (a) {
         return { name: (a && a.name) || '', brand: (a && a.brand) || '', phone400: (a && a.phone400) || '' };
       });
-      var vrNode = document.querySelector('[data-vr]');
-      // VR 封面优先取 [data-vr] 容器里的 img（贝壳是 vrlab 截图），取不到再兜底扫全页 / 用第一张房源图
-      var vrCover = '';
+      const vrNode = document.querySelector('[data-vr]');
+      // VR 封面优先取 [data-vr] 容器里的 img（贝壳是 vrlab 截图）；
+      // F036：兜底只扫 VR/媒体容器，不再遍历全页 img，避免大房源页的 O(n) 扫描与误抓占位图
+      let vrCover = '';
       if (vrNode) {
-        var vImg = String(vrNode.tagName).toUpperCase() === 'IMG' ? vrNode : vrNode.querySelector('img');
+        const vImg = String(vrNode.tagName).toUpperCase() === 'IMG' ? vrNode : vrNode.querySelector('img');
         if (vImg) vrCover = vImg.getAttribute('src') || vImg.getAttribute('data-src') || '';
       }
       if (!vrCover) {
-        var allImgs = Array.prototype.slice.call(document.querySelectorAll('img'));
-        for (var vi = 0; vi < allImgs.length; vi++) {
-          var vs = allImgs[vi].getAttribute('src') || allImgs[vi].getAttribute('data-src') || '';
-          if (/vrlab-image|realsee|pano|vr-cover/i.test(vs)) { vrCover = vs; break; }
+        const vrScope = document.querySelector('.vr-house, #vr-container, .vr-card');
+        if (vrScope) {
+          const allImgs = Array.prototype.slice.call(vrScope.querySelectorAll('img'));
+          for (let vi = 0; vi < allImgs.length; vi++) {
+            const vs = allImgs[vi].getAttribute('src') || allImgs[vi].getAttribute('data-src') || '';
+            if (/vrlab-image|realsee|pano|vr-cover/i.test(vs)) { vrCover = vs; break; }
+          }
         }
       }
       var data = {
@@ -116,13 +120,19 @@
         vr: vrNode ? (vrNode.getAttribute('data-vr') || '') : '',
         vrCover: vrCover
       };
+      const ready = !!(data.g.houseCode || data.title);
       window.postMessage({
         __HVT__: 1, site: 'beike', url: window.location.href,
-        id: data.g.houseCode, ok: !!(data.g.houseCode || data.title),
-        data: JSON.stringify(data)
-      }, '*');
+        nonce: window.__HVT_NONCE__,
+        id: data.g.houseCode, ok: ready,
+        // F033：区分「页面未就绪」与「探针真失败」，携带机器可读原因与页面标题
+        reason: ready ? '' : 'no-house-data', title: data.title,
+        data: ready ? JSON.stringify(data) : null
+      }, window.location.origin);
     } catch (e) {
-      window.postMessage({ __HVT__: 1, site: 'beike', url: window.location.href, ok: false, error: String(e) }, '*');
+      window.postMessage({ __HVT__: 1, site: 'beike', url: window.location.href,
+        nonce: window.__HVT_NONCE__, ok: false, reason: 'probe-error',
+        error: String(e), title: document.title }, window.location.origin);
     }
   }
 
@@ -165,13 +175,15 @@
       type: (rbText.match(/建筑类型\s*([^\s]+)/) || [])[1] || ''
     };
 
-    var links = C.safeText(d.breadcrumbLinks && d.breadcrumbLinks[0]);
-    var city = C.safeText(d.cityName) || stripSuffix(links) ||
-      stripSuffix(d.breadcrumbLinks && d.breadcrumbLinks[1]);
-    var district = stripSuffix(d.breadcrumbLinks && d.breadcrumbLinks[2]) ||
-      C.safeText(d.areaName).split(/\s+/)[0];
-    var bizcircle = stripSuffix(d.breadcrumbLinks && d.breadcrumbLinks[3]) ||
-      C.safeText(d.areaName).split(/\s+/)[1] || '';
+    // F160：面包屑不再盲信固定下标；先剔除「首页/二手房」等导航噪声再按层级取，
+    // 避免真实贝壳面包屑多出条目时城市/区/商圈错位，取不到时仍回落 areaName。
+    const blRaw = Array.isArray(d.breadcrumbLinks) ? d.breadcrumbLinks : [];
+    const bl = blRaw.map(function (b) { return stripSuffix(typeof b === 'string' ? b : (b && b.text)); })
+      .filter(function (s) { return s && !/^(首页|二手房|新房|租房|贝壳找房|链家|全部|更多)/.test(s); });
+    const links = bl[0] || '';
+    const city = C.safeText(d.cityName) || links || bl[1] || '';
+    const district = bl[1] || C.safeText(d.areaName).split(/\s+/)[0];
+    const bizcircle = bl[2] || C.safeText(d.areaName).split(/\s+/)[1] || '';
 
     // 交通出行里「13号线龙华寺站800米」-> 站点 + 距离（只取明确带米数的那段）
     var traffic = attrs['交通出行'] || '';
@@ -211,7 +223,12 @@
       'attributes.propertyType': C.safeText(tran['交易权属']),
       'transaction.totalPrice': totalPrice,
       'transaction.unitPrice': unitPrice,
-      'transaction.status': g.status === '0' ? '已下架' : '在售',
+      // F159：空/缺失状态不再一律标「在售」，未知非空值保持原行为避免丢数据
+      'transaction.status': (function (s) {
+        if (s === '') return '';
+        if (s === '0' || s === '已下架' || s === '下架') return '已下架';
+        return '在售';
+      })(C.safeText(g.status)),
       'transaction.sourcePlatform': '贝壳',
       'transaction.houseNumber': houseNumber,
       'transaction.ownership': [
@@ -219,8 +236,8 @@
       ].filter(Boolean).map(C.safeText).join('；'),
       'transaction.agentName': agentName,
       'transaction.agentPhone': agentPhone,
-      'geo.lng': C.coordNum(lngRaw),
-      'geo.lat': C.coordNum(latRaw)
+      'geo.lng': C.coordNum(lngRaw, false),
+      'geo.lat': C.coordNum(latRaw, true)
     };
 
     // 图片：贝壳只给房源实拍 + 户型图，没有 mp4 直链；VR 是 realsee 播放页，只进备注

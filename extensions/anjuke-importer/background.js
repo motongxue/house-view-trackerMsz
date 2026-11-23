@@ -10,6 +10,19 @@ const KEY_SCHEMA = 'hvt_ajk_schema';
 const KEY_CONN = 'hvt_ajk_conn';
 const DEFAULT_BASE = 'http://127.0.0.1:8787';
 
+// F259/F262/F263：后端地址统一严格校验——只接受 http(s)，拒绝内嵌凭据 / query / hash，
+// 避免 Bearer token 被发往 craft 地址。返回归一化后的 base，非法返回 null。
+function safeBase(raw) {
+  const s = String(raw || '').trim().replace(/\/+$/, '');
+  if (!s) return null;
+  let u;
+  try { u = new URL(s); } catch (e) { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (u.username || u.password) return null;
+  if (u.search || u.hash) return null;
+  return u.protocol + '//' + u.host + (u.pathname === '/' ? '' : u.pathname.replace(/\/+$/, ''));
+}
+
 const storeGet = (key) => new Promise((resolve) => {
   chrome.storage.local.get(key, (r) => resolve(r[key] || null));
 });
@@ -34,7 +47,11 @@ async function ensureSchema() {
       const res = await fetch(base + '/js/property-schema.json', { cache: 'no-store' });
       if (res.ok) {
         const j = await res.json();
-        if (Array.isArray(j.csvCols) && j.csvCols.length) schema = j;
+        if (Array.isArray(j.csvCols) && j.csvCols.length) {
+          // F048：缺 imageRules 会让贝壳图片裂开，明确告警（core.configure 会沿用缓存规则）
+          if (!Array.isArray(j.imageRules)) console.warn('[HVT] 系统字段清单缺少 imageRules，贝壳图片可能裂开；沿用缓存规则');
+          schema = j;
+        }
       }
     } catch (e) { /* 系统未启动，改用缓存 */ }
     if (schema) await storeSet({ [KEY_SCHEMA]: schema });
@@ -75,13 +92,15 @@ function siteInfo(url) {
 async function pingTab(tabId) {
   // 旧标签页里可能残留已失效的 content script（扩展重载后），它既不回包也不报错，
   // 所以必须带超时，否则诊断/重采会永远卡住。
+  let timer = null;
   try {
     const r = await Promise.race([
       chrome.tabs.sendMessage(tabId, { type: 'HVT_PING' }),
-      new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 1200); })
+      new Promise(function (resolve) { timer = setTimeout(function () { resolve(null); }, 1200); })
     ]);
     return (r && r.ok) ? r : null;
   } catch (e) { return null; }
+  finally { if (timer) clearTimeout(timer); } // F175：落地后清掉超时定时器
 }
 function blockedHint(url) {
   const u = String(url || '');
@@ -139,22 +158,31 @@ async function handle(msg, sender, sendResponse) {
       const old = await getState();
       const id = String(msg.id || old.id || old.loupanId || 'unknown');
       const site = msg.site || old.site || 'anjuke';
+      // F260：站点发生变化时统一丢弃上一站点的页面数据，避免跨站点残留
+      const siteChanged = !!old.site && old.site !== site;
+      const prev = siteChanged ? {} : old;
+      // F174：抓取对象做体积校验，避免撑爆 storage 配额
+      if (msg.data) {
+        let size = 0;
+        try { size = JSON.stringify(msg.data).length; } catch (e) { size = 0; }
+        if (size > 1000000) return sendResponse({ ok: false, error: '页面数据过大，已跳过保存' });
+      }
       const next = {
         site: site,
         id: id,
         loupanId: id,
-        sourceUrl: msg.sourceUrl || old.sourceUrl || '',
+        sourceUrl: msg.sourceUrl || prev.sourceUrl || '',
         updatedAt: Date.now()
       };
       if (site === 'beike') {
         next.page = msg.data;                 // 单页一次采全
         next.main = null; next.params = null;
       } else {
-        next.main = msg.pageType === 'main' ? msg.data : old.main;
-        next.params = msg.pageType === 'params' ? msg.data : old.params;
+        next.main = msg.pageType === 'main' ? msg.data : prev.main;
+        next.params = msg.pageType === 'params' ? msg.data : prev.params;
         next.page = null;
         // 换了楼盘就丢掉上一个楼盘的详细信息，避免串数据
-        if (old.loupanId && old.loupanId !== id && msg.pageType === 'main') next.params = null;
+        if (prev.loupanId && prev.loupanId !== id && msg.pageType === 'main') next.params = null;
       }
       await storeSet({ [KEY_STATE]: next });
       const p = await buildPayload();
@@ -182,7 +210,8 @@ async function handle(msg, sender, sendResponse) {
 
     if (msg.type === 'HVT_CONFIG') {
       const cfg = await getCfg();
-      const newBase = String(msg.base || cfg.base).replace(/\/+$/, '');
+      const newBase = safeBase(msg.base || cfg.base);
+      if (!newBase) return sendResponse({ ok: false, error: '地址格式不对，请填完整的 http(s) 地址（不要带账号密码或查询参数）' });
       const patch = { base: newBase };
       if (msg.token !== undefined) patch.token = String(msg.token || '').trim();
       await storeSet({ [KEY_CFG]: Object.assign(cfg, patch) });
@@ -237,8 +266,9 @@ async function handle(msg, sender, sendResponse) {
       if (!ping) {
         // 扩展重载后旧标签页没有脚本：按 manifest 同一套 content.js/content.css 补注入
         try {
-          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content.css'] });
+          // F173：先 executeScript 成功再插 CSS，避免部分失败时重复注入样式表
           await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content.css'] });
           injected = true;
           await new Promise(function (r) { setTimeout(r, 250); });
           ping = await pingTab(tab.id);
@@ -256,37 +286,50 @@ async function handle(msg, sender, sendResponse) {
     }
 
     if (msg.type === 'HVT_DOWNLOAD') {
+      // F176：清理来自 content script 的文件名，防止路径分隔符 / 保留字符导致越界或下载失败
+      const rawName = String(msg.filename || 'house-import.csv');
+      const safeName = rawName.replace(/[\\/:*?"<>|]/g, '_').replace(/\.\./g, '_').slice(0, 120) || 'house-import.csv';
       const url = 'data:text/csv;charset=utf-8,' + encodeURIComponent(msg.csv || '');
-      const id = await chrome.downloads.download({
-        url: url, filename: msg.filename || 'house-import.csv', saveAs: true
-      });
-      return sendResponse({ ok: !!id, downloadId: id });
+      try {
+        const id = await chrome.downloads.download({
+          url: url, filename: safeName, saveAs: true
+        });
+        return sendResponse({ ok: !!id, downloadId: id });
+      } catch (e) {
+        return sendResponse({ ok: false, error: '下载失败：' + ((e && e.message) || String(e)) });
+      }
     }
 
     // 测试连接：用当前输入框里的地址探后端，不必先保存、不必登录
     if (msg.type === 'HVT_TEST') {
-      var cfgT = await getCfg();
-      var testBase = String(msg.base || cfgT.base || DEFAULT_BASE).replace(/\/+$/, '');
-      if (!/^https?:\/\//.test(testBase)) {
-        return sendResponse({ ok: false, error: '地址格式不对，请填完整地址，如 http://42.194.228.171:8787' });
+      const cfgT = await getCfg();
+      const testBase = safeBase(msg.base || cfgT.base);
+      if (!testBase) {
+        return sendResponse({ ok: false, error: '地址格式不对，请填完整地址，如 http://your-host:8787（不要带账号密码或查询参数）' });
       }
       try {
-        var tr = await fetch(testBase + '/api/auth/captcha', { cache: 'no-store' });
-        var tj = await tr.json().catch(function () { return {}; });
+        const tr = await fetch(testBase + '/api/auth/captcha', { cache: 'no-store' });
+        const tj = await tr.json().catch(function () { return {}; });
         if (!tr.ok) return sendResponse({ ok: false, error: '系统返回 HTTP ' + tr.status + (tj.error ? ('：' + tj.error) : '') });
+        // F172：仅凭 2xx 不足以判定就是择隅系统，校验响应为非空 JSON 对象再记成功
+        if (!tj || typeof tj !== 'object' || Array.isArray(tj) || !Object.keys(tj).length) {
+          return sendResponse({ ok: false, error: '该地址返回的不是择隅系统接口数据，请确认地址是否正确' });
+        }
         // 记住「这个地址测通过」，弹窗里第 3 步才能打勾；换地址时由 HVT_CONFIG 清掉
         await storeSet({ [KEY_CONN]: { base: testBase, at: Date.now() } });
         return sendResponse({ ok: true, base: testBase, msg: '连接成功，系统接口可访问' });
       } catch (e) {
-        var tw = (e && e.message) || String(e);
+        const tw = (e && e.message) || String(e);
         return sendResponse({ ok: false, error: '连不上：' + tw + '（检查地址是否正确、插件是否授权该地址、服务器是否启动）' });
       }
     }
 
     if (msg.type === 'HVT_PUSH') {
       const cfg = await getCfg();
-      const base = String(msg.base || cfg.base || DEFAULT_BASE).replace(/\/+$/, '');
-      const token = msg.token || cfg.token;
+      // F261/F262：凭证与目标地址只取存储配置，不接受消息覆盖；发送前严格校验 base
+      const base = safeBase(cfg.base);
+      if (!base) return sendResponse({ ok: false, error: '系统地址无效，请在面板重新保存地址' });
+      const token = cfg.token;
       if (!token) return sendResponse({ ok: false, error: '还没有系统登录态：请先打开一次择隅系统页面，或在插件面板里手动填 token' });
       const p = await buildPayload();
       if (!p.hasMain) return sendResponse({ ok: false, error: '还没有采到房源数据' });
@@ -298,20 +341,22 @@ async function handle(msg, sender, sendResponse) {
           body: JSON.stringify([p.row])
         });
       } catch (e) {
-        var why = (e && e.message) || String(e);
+        const why = (e && e.message) || String(e);
         if (/Failed to fetch|NetworkError|Load failed/i.test(why)) {
           why += '（请确认：① 系统地址填对且服务器已启动；② 插件已授权该地址——在面板点「保存地址」并允许，或到 chrome://extensions 的站点访问权限里加上 ' + base + '）';
         }
         return sendResponse({ ok: false, error: '连不上系统：' + why });
       }
-      const body = await res.json().catch(() => ({}));
+      let body = await res.json().catch(() => ({}));
+      if (!body || typeof body !== 'object' || Array.isArray(body)) body = {}; // F045
       if (!res.ok) return sendResponse({ ok: false, error: body.error || ('HTTP ' + res.status) });
       return sendResponse({ ok: true, data: body.data, name: p.name });
     }
 
     if (msg.type === 'HVT_OPEN_SYSTEM') {
       const cfg = await getCfg();
-      chrome.tabs.create({ url: (msg.base || cfg.base || DEFAULT_BASE) + '/' });
+      const base = safeBase(msg.base || cfg.base) || DEFAULT_BASE;
+      chrome.tabs.create({ url: base + '/' });
       return sendResponse({ ok: true });
     }
 
@@ -322,6 +367,9 @@ async function handle(msg, sender, sendResponse) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  handle(msg, sender, sendResponse);
+  // F046：给 handle 的 promise 兜底 catch，避免 sendResponse 自身抛错成为未处理拒绝
+  Promise.resolve(handle(msg, sender, sendResponse)).catch((e) => {
+    try { sendResponse({ ok: false, error: (e && e.message) || String(e) }); } catch (_) { /* 通道已关闭 */ }
+  });
   return true; // 保持异步响应通道
 });

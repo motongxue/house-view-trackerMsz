@@ -4,14 +4,27 @@
  * 再回落 localStorage 兼容老版本；只在「当前页面就是要推送的系统」时才同步 token。 */
 (function () {
   try {
-    var token = sessionStorage.getItem('hvt_token') || localStorage.getItem('hvt_token');
+    const token = sessionStorage.getItem('hvt_token') || localStorage.getItem('hvt_token');
     if (!token || !window.chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
-    var origin = location.origin;
+    const origin = location.origin;
     chrome.storage.local.get('hvt_ajk_cfg', function (r) {
-      var cfg = r && r.hvt_ajk_cfg;
-      var base = cfg && String(cfg.base || '').replace(/\/+$/, '');
+      // F138：异步回调必须检查 lastError，避免上下文失效时静默不同步
+      if (chrome.runtime.lastError) {
+        console.warn('[HVT] 读取插件配置失败：' + chrome.runtime.lastError.message);
+        return;
+      }
+      const cfg = r && r.hvt_ajk_cfg;
+      const rawBase = cfg && cfg.base ? String(cfg.base) : '';
+      let base = '';
+      // F139：new URL(base).origin 归一化后再比较，避免路径/大小写/端口差异导致永不同步
+      if (rawBase) {
+        try { base = new URL(rawBase).origin; }
+        catch (e) { console.warn('[HVT] 插件配置的地址无效，跳过登录态同步'); return; }
+      }
       if (base && base !== origin) return;
-      chrome.runtime.sendMessage({ type: 'HVT_TOKEN', token: token, base: origin });
+      chrome.runtime.sendMessage({ type: 'HVT_TOKEN', token: token, base: origin }, function () {
+        if (chrome.runtime.lastError) console.warn('[HVT] 同步登录态失败：' + chrome.runtime.lastError.message);
+      });
     });
   } catch (e) { /* 隐私模式或未登录时忽略 */ }
 })();

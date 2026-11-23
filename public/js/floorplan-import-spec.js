@@ -10,8 +10,7 @@
 (function () {
   'use strict';
 
-  var VER = 'v1.8.6';
-  var CSS_PREFIX = 'fpi';
+  // F062: 删除未被引用的 VER / CSS_PREFIX 死代码（选择器一律用字面 fpi- 前缀）
 
   var THEME = {
     light: {
@@ -70,15 +69,16 @@
     ].join('');
     document.head.appendChild(st);
   }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
+  // F064: 移除了未使用的 esc()（所有 innerHTML 均为静态串，无用户数据插入）
 
   var panel = null, body = null;
   function msg(text, kind) {
-    if (!body) return;
+    // F065: 面板未构建时（如菜单在 build 前直接调用导入），确保面板存在并把反馈显示出来，
+    // 而不是静默 return 让用户看不到任何失败提示。
+    if (!body) {
+      if (!panel) build();
+      if (!body) return;
+    }
     var old = body.querySelector('.fpi-msg'); if (old) old.remove();
     var d = document.createElement('div');
     d.className = 'fpi-msg ' + (kind || 'err');
@@ -87,19 +87,45 @@
   }
 
   // ---------------------------------------------------------------- 解析
+  // F190: 按花括号配对（跳过字符串/转义）提取完整顶层对象，替代非贪婪正则 + lastIndexOf('}') 截断兜底。
+  function braceSlice(raw) {
+    var start = raw.indexOf('{');
+    if (start < 0) return null;
+    var depth = 0, inStr = false, esc = false;
+    for (var i = start; i < raw.length; i++) {
+      var ch = raw.charAt(i);
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return raw.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
   // 技能 HTML：<script id="__preset">window.__PRESET__={...}</script>
   function extractPreset(html) {
     var m = html.match(/<script[^>]*\bid="__preset"[^>]*>\s*window\.__PRESET__\s*=\s*([\s\S]*?)<\/script>/i);
     if (!m) m = html.match(/window\.__PRESET__\s*=\s*([\s\S]*?)<\/script>/i);
-    if (!m) m = html.match(/window\.__PRESET__\s*=\s*(\{[\s\S]*?\})\s*;?\s*(?:<\/script>|$)/i);
+    if (!m) m = html.match(/window\.__PRESET__\s*=\s*([\s\S]*?);?\s*(?:<\/script>|$)/i);
     if (!m) return null;
     var raw = m[1];
-    try { return JSON.parse(raw); }
-    catch (e) {
-      var last = raw.lastIndexOf('}');
-      if (last > 0) { try { return JSON.parse(raw.slice(0, last + 1)); } catch (e2) {} }
-      return null;
+    var candidates = [raw];
+    var balanced = braceSlice(raw);
+    if (balanced && balanced !== raw) candidates.push(balanced);
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var obj = JSON.parse(candidates[i]);
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj;
+      } catch (e) { /* 试下一个候选 */ }
     }
+    return null;
   }
   function parseInput(text) {
     try {
@@ -126,9 +152,12 @@
 
     if (!spec) {
       // 旧格式：本页「导出方案 JSON」产出的 state（WALLS/ROOMS/furniture）
-      if (Array.isArray(obj.WALLS) || Array.isArray(obj.ROOMS) || Array.isArray(obj.furniture)) {
+      // F191: 要求确实带 WALLS/ROOMS 数组，仅凭 furniture 不足以认定，避免误路由歧义对象
+      if ((Array.isArray(obj.WALLS) || Array.isArray(obj.ROOMS)) &&
+          !Array.isArray(obj.walls) && !Array.isArray(obj.rooms)) {
         if (typeof window.__hvtApplyInternalState !== 'function') { msg('页面尚未就绪，请刷新后重试', 'err'); return false; }
-        window.__hvtApplyInternalState(obj);
+        try { window.__hvtApplyInternalState(obj); }
+        catch (e) { msg('应用旧格式方案失败：' + e.message, 'err'); return false; }
         return true;
       }
       msg('没找到 walls 或 rooms 数组，这不像一份户型方案（HouseSpec）', 'err');
@@ -140,14 +169,20 @@
     if (Array.isArray(spec.walls)) {
       for (var i = 0; i < spec.walls.length; i++) {
         var w = spec.walls[i];
-        if (!w || !Array.isArray(w.a) || !Array.isArray(w.b) || w.a.length < 2 || w.b.length < 2) {
-          msg('第 ' + (i + 1) + ' 面墙的 a / b 必须是 [x, y] 坐标', 'err'); return false;
+        // F192: 校验 a / b 是长度≥2 且坐标为有限数的数组，杜绝 null/NaN 流入几何转换
+        if (!w || !Array.isArray(w.a) || !Array.isArray(w.b) || w.a.length < 2 || w.b.length < 2 ||
+            !Number.isFinite(Number(w.a[0])) || !Number.isFinite(Number(w.a[1])) ||
+            !Number.isFinite(Number(w.b[0])) || !Number.isFinite(Number(w.b[1]))) {
+          msg('第 ' + (i + 1) + ' 面墙的 a / b 必须是有限数值的 [x, y] 坐标', 'err'); return false;
         }
       }
     }
     if (typeof window.hsToFloorplan !== 'function') { msg('转换模块未加载，请强制刷新页面（Ctrl+F5）', 'err'); return false; }
     if (typeof window.__hvtApplyHouseSpec !== 'function') { msg('页面尚未就绪，请刷新后重试', 'err'); return false; }
-    var res = window.__hvtApplyHouseSpec(spec);
+    // F267: 页面钩子可能抛错（语义错误的 spec），捕获后反馈真实错误，避免未捕获异常与页面半更新
+    var res;
+    try { res = window.__hvtApplyHouseSpec(spec); }
+    catch (e) { msg('应用户型方案失败：' + (e && e.message ? e.message : e), 'err'); return false; }
     return !!res;
   }
 
@@ -159,22 +194,26 @@
   }
 
   // ZIP：只在浏览器内存里解压，取 spec.json（无则取第一个 .json），其余文件不落盘
+  // F063: 用单一 async 流程 + try/catch/finally 取代 FileReader 回调内嵌套 .then 链，统一错误路径
   function readZipFile(file, onText) {
     if (typeof JSZip === 'undefined') { msg('解压库未加载，请改用 .json / .html 文件，或强制刷新页面', 'err'); return; }
     msg('正在解压 ' + file.name + ' …', 'ok');
     var rd = new FileReader();
-    rd.onload = function () {
-      JSZip.loadAsync(rd.result).then(function (zip) {
+    rd.onerror = function () { msg('读取文件失败', 'err'); };
+    rd.onload = async function () {
+      var target = '';
+      try {
+        var zip = await JSZip.loadAsync(rd.result);
         var names = Object.keys(zip.files).filter(function (n) { return !zip.files[n].dir && /\.json$/i.test(n); });
         if (!names.length) { msg('压缩包里没找到 .json 方案文件', 'err'); return; }
-        var target = names.filter(function (n) { return n.toLowerCase().split('/').pop() === 'spec.json'; })[0] || names[0];
-        zip.files[target].async('string').then(function (txt) {
-          msg('已从压缩包取出 ' + target + '（其余文件未保存），正在生成…', 'ok');
-          onText(txt);
-        }).catch(function (e) { msg('读取 ' + target + ' 失败：' + e.message, 'err'); });
-      }).catch(function (e) { msg('解压失败：' + e.message, 'err'); });
+        target = names.filter(function (n) { return n.toLowerCase().split('/').pop() === 'spec.json'; })[0] || names[0];
+        var txt = await zip.files[target].async('string');
+        msg('已从压缩包取出 ' + target + '（其余文件未保存），正在生成…', 'ok');
+        // F193: onText 会触发页面 applier，单独 try/catch 报告真实错误，不再被误报为「读取失败」
+        try { onText(txt); }
+        catch (e) { msg('应用 ' + target + ' 失败：' + (e && e.message ? e.message : e), 'err'); }
+      } catch (e) { msg('解压/读取 ' + (target || file.name) + ' 失败：' + (e && e.message ? e.message : e), 'err'); }
     };
-    rd.onerror = function () { msg('读取文件失败', 'err'); };
     rd.readAsArrayBuffer(file);
   }
 
@@ -188,7 +227,11 @@
       return;
     }
     var rd = new FileReader();
-    rd.onload = function () { if (doImportText(rd.result)) showOk(); };
+    // F194: 文本路径 onload 内 applier 抛错曾是未捕获异常且无反馈，这里统一捕获并通过 msg 报告
+    rd.onload = function () {
+      try { if (doImportText(rd.result)) showOk(); }
+      catch (e) { msg('导入失败：' + (e && e.message ? e.message : e), 'err'); }
+    };
     rd.onerror = function () { msg('读取文件失败', 'err'); };
     rd.readAsText(file);
   }
@@ -200,6 +243,10 @@
 
   // ---------------------------------------------------------------- UI
   function importView() {
+    // F064: 面板重开时保留用户已粘贴但未导入的草稿
+    var draft = '';
+    var oldTa = body.querySelector('#fpi-ta');
+    if (oldTa) draft = oldTa.value;
     body.innerHTML =
       '<p class="fpi-note">支持三种来源：户型 <b>JSON</b>；house-plan-designer 技能导出的 <b>HTML</b>（自动提取 window.__PRESET__）；技能打包的 <b>.zip</b>（只取里面的 spec.json，其余文件用完即弃、不保存）。导入后立即在本页生成墙体、门窗与房间，不刷新页面。</p>' +
       '<textarea class="fpi-ta" id="fpi-ta" placeholder=\'粘贴 HouseSpec JSON，或整段粘贴技能导出的 HTML…\'></textarea>' +
@@ -208,6 +255,7 @@
       '  <span class="fpi-file" data-act="fpi-file">选择 .json / .html / .zip 文件</span>' +
       '</div>';
     var fileTag = body.querySelector('[data-act="fpi-file"]');
+    if (draft) { var ta = body.querySelector('#fpi-ta'); if (ta) ta.value = draft; }
     fileTag.addEventListener('click', function () {
       var inp = document.createElement('input');
       inp.type = 'file';
@@ -247,6 +295,8 @@
   // 底部浮动按钮取消后，菜单项同时承担「打开 / 收起」；面板内 × 仍可关闭
   window.__hvtOpenImportPanel = function () {
     if (!panel) build();
+    // F189: 页面明暗主题可能在运行时切换，打开面板时重算主题变量，避免面板颜色陈旧
+    applyVars(THEME[pickTheme()]);
     if (panel.classList.contains('open')) { panel.classList.remove('open'); return; }
     panel.classList.add('open');
     importView();

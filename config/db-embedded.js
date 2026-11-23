@@ -17,6 +17,9 @@ const path = require('path');
 
 let db = null;
 let ready = null;
+let failedInit = null;       // 缓存初始化失败，避免每个 query 都重复 mkdir/require
+let initLogged = false;      // 同一初始化失败只打一次日志
+const INIT_RETRY_MS = 5000;  // 失败后短暂退避再重试，兼顾「瞬时故障可自愈」与「避免反复空转」
 
 function dataDir() {
   const root = path.join(__dirname, '..');
@@ -26,6 +29,11 @@ function dataDir() {
 
 async function ensure() {
   if (!ready) {
+    // 初始化失败后在退避窗口内直接复用同一个错误，避免每次 query 都重跑 mkdir/require
+    if (failedInit) {
+      if (Date.now() - failedInit.at < INIT_RETRY_MS) throw failedInit.err;
+      failedInit = null;
+    }
     ready = (async () => {
       const dir = dataDir();
       fs.mkdirSync(dir, { recursive: true });
@@ -33,9 +41,19 @@ async function ensure() {
       const inst = new PGlite(dir);
       await inst.waitReady;
       db = inst;
+      failedInit = null;
+      initLogged = false;
       console.log('✅ 内嵌 PostgreSQL 已就绪（数据目录：' + dir + '）');
       return inst;
-    })().catch((e) => { ready = null; throw e; });
+    })().catch((e) => {
+      ready = null;
+      if (!initLogged) {
+        console.error('[embedded-db] 内嵌数据库初始化失败（数据目录：' + dataDir() + '）：' + (e && e.message || e));
+        initLogged = true;
+      }
+      failedInit = { at: Date.now(), err: e };
+      throw e;
+    });
   }
   return ready;
 }
@@ -63,7 +81,11 @@ const pool = {
     return shape(Array.isArray(arr) ? arr[arr.length - 1] : arr);
   },
   async end() {
-    if (db) { await db.close(); db = null; ready = null; }
+    // 先等 in-flight 的 ensure() 结算，否则可能 close 之后才把 db 赋值，留下未关闭的实例
+    if (ready) { try { await ready; } catch (_) {} }
+    if (db) { await db.close(); db = null; }
+    ready = null;
+    failedInit = null;
   }
 };
 

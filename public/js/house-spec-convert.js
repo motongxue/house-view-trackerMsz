@@ -102,6 +102,8 @@
       if (used.has(u + '->' + v)) continue;
       const startU = u, startV = v, poly = [], edges = [];
       let cur = u, nxt = v, guard = 0;
+      // F197: 记录本条走步是否真正闭合；只有走回起点边才算一个有效面
+      let closed = false;
       do {
         used.add(cur + '->' + nxt);
         poly.push(nodes[cur].slice()); edges.push([cur, nxt]);
@@ -116,8 +118,10 @@
         }
         if (best < 0) break;
         cur = nxt; nxt = best;
-      } while (!(cur === startU && nxt === startV) && (++guard) < 100000);
-      if (poly.length >= 3) faces.push({ poly: simplify(poly), edges, signedArea: polyArea(poly) });
+        if (cur === startU && nxt === startV) { closed = true; break; }
+      } while (++guard < 100000);
+      // F197: 仅在走步真正闭合（回到起点边）时才登记为有效面，避免悬点提前 break 产生伪房间/伪外墙
+      if (closed && poly.length >= 3) faces.push({ poly: simplify(poly), edges, signedArea: polyArea(poly) });
     }
     return faces;
   }
@@ -167,7 +171,11 @@
     walls.forEach((w, wi) => {
       const a = w.a, b = w.b;
       if (!Array.isArray(a) || !Array.isArray(b)) return;
-      const horizontal = Math.abs(b[0] - a[0]) >= Math.abs(b[1] - a[1]);
+      if (!Number.isFinite(a[0]) || !Number.isFinite(a[1]) || !Number.isFinite(b[0]) || !Number.isFinite(b[1])) return;
+      // F200: 显式拒绝非轴对齐墙（斜墙）——轴对齐矩形无法表达斜墙，强行重建会产生几何错误
+      const dxAbs = Math.abs(b[0] - a[0]), dyAbs = Math.abs(b[1] - a[1]);
+      if (dxAbs > 1e-6 && dyAbs > 1e-6) return;
+      const horizontal = dxAbs >= dyAbs;
       const axis = horizontal ? 0 : 1;              // 0=x, 1=y
       const off = (horizontal ? (a[1] + b[1]) / 2 : (a[0] + b[0]) / 2); // 墙中心线在另一轴上的坐标
       const lo = Math.min(a[axis], b[axis]), hi = Math.max(a[axis], b[axis]);
@@ -175,8 +183,10 @@
       const kind = exteriorFlags[wi] ? 'e' : 'b';
 
       // 洞口（from/to 是轴上绝对坐标），裁剪到墙体范围内并按位置排序
+      // F198: 校验 from / to 为有限数，缺失或非法值跳过该洞口，不再被 +x||0 当成 0 造成伪洞口。
       const ops = (Array.isArray(w.openings) ? w.openings : [])
-        .map(o => ({ o, from: Math.max(lo, Math.min(hi, +o.from || 0)), to: Math.max(lo, Math.min(hi, +o.to || 0)) }))
+        .filter(o => o && Number.isFinite(Number(o.from)) && Number.isFinite(Number(o.to)))
+        .map(o => ({ o, from: Math.max(lo, Math.min(hi, Number(o.from))), to: Math.max(lo, Math.min(hi, Number(o.to))) }))
         .filter(x => x.to - x.from > 1)
         .sort((x, y) => x.from - y.from);
 
@@ -185,9 +195,12 @@
 
       let cursor = lo;
       for (const x of ops) {
-        if (x.from - cursor > 1) WALLS.push([...rect(cursor, x.from), kind]);
-        const r = rect(x.from, x.to), type = (x.o.type || 'door').toLowerCase();
-        const mid = horizontal ? [(x.from + x.to) / 2, off] : [off, (x.from + x.to) / 2];
+        // F199: 与前一洞口重叠时，把 from 抬到 cursor，剩余宽度≤1 则整段跳过，避免重复/负重叠洞口
+        const from = Math.max(x.from, cursor);
+        if (x.to - from <= 1) { cursor = Math.max(cursor, x.to); continue; }
+        if (from - cursor > 1) WALLS.push([...rect(cursor, from), kind]);
+        const r = rect(from, x.to), type = (x.o.type || 'door').toLowerCase();
+        const mid = horizontal ? [(from + x.to) / 2, off] : [off, (from + x.to) / 2];
         if (type === 'window') {
           WINS.push(r);
         } else if (type === 'sliding' || type === 'slidingdoor' || type === 'slide') {
@@ -202,8 +215,8 @@
           DOORS.push({
             name: type === 'hole' ? '垭口' : '门',
             rect: r,
-            h: horizontal ? [x.from, off] : [off, x.from],
-            c: c, o: o, len: x.to - x.from,
+            h: horizontal ? [from, off] : [off, from],
+            c: c, o: o, len: x.to - from,
             hole: type === 'hole'
           });
         }
@@ -232,7 +245,11 @@
 
     // ===== 4) 包围盒 / 原点 =====
     let minX = 1e15, minY = 1e15, maxX = -1e15, maxY = -1e15, has = false;
-    const eat = (x, y) => { has = true; minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+    // F068: 拒绝非有限坐标，避免 NaN 通过 Math.min/max 污染整个 bounds 产生 NaN viewBox
+    const eat = (x, y) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      has = true; minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    };
     for (const w of WALLS) { eat(w[0], w[1]); eat(w[2], w[3]); }
     if (!has) for (const r of ROOMS) for (const p of r.poly) eat(p[0], p[1]);
     if (!has) { minX = 0; minY = 0; maxX = 10000; maxY = 10000; }

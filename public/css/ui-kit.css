@@ -28,6 +28,7 @@ body {
 .zy-header .slogan { font-family: var(--font-brand); font-size: 16px; font-weight: var(--fw-medium); }
 .zy-header .search { height: 30px; width: 200px; border: var(--border-1); border-radius: var(--radius-4); padding: 0 10px; font-size: var(--fs-14); color: var(--text-disable); }
 .zy-header .search:focus { color: var(--text-2); outline: none; border-color: var(--primary); }
+.zy-header .search:focus-visible { box-shadow: 0 0 0 2px var(--focus-ring); }
 .zy-header .spacer { flex: 1; }
 .zy-header .icon { width: 16px; height: 16px; }
 .zy-header .avatar { width: 32px; height: 32px; border-radius: var(--radius-round); }
@@ -36,7 +37,7 @@ body {
 .zy-sidebar { width: var(--sidebar-expanded); background: var(--white); border-right: var(--border-1); padding: var(--sp-s); }
 .zy-sidebar.collapsed { width: var(--sidebar-collapsed); }
 .zy-sidebar .nav-item { display: flex; align-items: center; gap: var(--sp-xs); padding: 10px var(--sp-xs); border-radius: var(--radius-4); color: var(--text-2); font-size: var(--fs-14); cursor: pointer; }
-.zy-sidebar .nav-item.active { color: var(--primary); background: rgba(26,103,248,0.08); font-weight: var(--fw-medium); }
+.zy-sidebar .nav-item.active { color: var(--primary); background: var(--primary-bg); font-weight: var(--fw-medium); }
 .zy-sidebar .nav-item .nav-icon { width: 16px; height: 16px; }
 .zy-content { flex: 1; padding: var(--content-padding); }
 .zy-breadcrumb { font-size: var(--fs-14); color: var(--text-3); margin-bottom: var(--sp-s); }
@@ -55,8 +56,15 @@ body {
 .zy-btn-primary:disabled { background: var(--primary-disabled); cursor: not-allowed; }
 .zy-btn-secondary { background: var(--white); color: var(--text-2); border-color: var(--border-strong); }
 .zy-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
+.zy-btn-secondary:active { background: var(--bg-soft); color: var(--primary); }
+.zy-btn-secondary:disabled { color: var(--text-disable); border-color: var(--border); background: var(--white); cursor: not-allowed; }
+.zy-btn-secondary:disabled:hover { color: var(--text-disable); border-color: var(--border); }
 .zy-btn-text { background: transparent; color: var(--primary); padding: 0 8px; }
 .zy-btn-text:hover { opacity: .8; }
+.zy-btn-text:active { opacity: .6; }
+.zy-btn-text:disabled { color: var(--text-disable); cursor: not-allowed; }
+.zy-btn-text:disabled:hover { opacity: 1; }
+.zy-btn:focus-visible { box-shadow: 0 0 0 2px var(--focus-ring); }
 .zy-btn-icon { width: 32px; padding: 0; }
 /* 按钮组：主要按钮在最右，从右往左弱化 */
 .zy-btn-group { display: flex; justify-content: flex-end; gap: var(--sp-xs); }
@@ -66,11 +74,14 @@ body {
 .zy-label { display: block; font-size: var(--fs-14); color: var(--text-2); margin-bottom: var(--sp-xxs); }
 .zy-input {
   width: 100%; height: 32px; padding: 0 10px; border: var(--border-1); border-radius: var(--radius-4);
-  font-size: var(--fs-14); color: var(--text-2); background: #fff;
+  font-size: var(--fs-14); color: var(--text-2); background: var(--white);
 }
 .zy-input::placeholder { color: var(--text-disable); }
 .zy-input:focus { outline: none; border-color: var(--primary); }
-.zy-input.error { border-color: var(--error); }
+.zy-input:focus-visible { box-shadow: 0 0 0 2px var(--focus-ring); }
+/* 校验失败：除边框色外加粗边框与浅红底，避免色盲用户只靠颜色识别；
+   业务侧请在输入框标注 aria-invalid="true"，并用 aria-describedby 指向对应错误文案。 */
+.zy-input.error { border: 2px solid var(--error); background: var(--error-bg); }
 .zy-textarea { width: 100%; min-height: 80px; padding: 8px 10px; border: var(--border-1); border-radius: var(--radius-4); font-size: var(--fs-14); resize: vertical; }
 
 /* ---------- 卡片 ---------- */
@@ -82,23 +93,24 @@ body {
 .zy-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: var(--fs-12); line-height: 18px; }
 .zy-tag-close { margin-left: 6px; cursor: pointer; }
 .zy-tag-green { background: var(--aux-green-09); color: var(--aux-green-03); }
-.zy-tag-blue  { background: #E8F0FF; color: var(--primary); }
+.zy-tag-blue  { background: var(--primary-09); color: var(--primary); }
 .zy-tag-orange{ background: var(--aux-orange-09); color: var(--aux-orange-03); }
 .zy-tag-red   { background: var(--aux-red-09); color: var(--aux-red-03); }
 
 /* ---------- 表格 ---------- */
 .zy-table { width: 100%; border-collapse: collapse; background: var(--white); font-size: var(--fs-14); }
 .zy-table th, .zy-table td { padding: 10px 12px; border-bottom: var(--border-1); text-align: left; color: var(--text-2); }
-.zy-table th { color: var(--text-1); font-weight: var(--fw-medium); background: #FAFAFA; }
-.zy-table tbody tr:hover { background: rgba(26,103,248,0.04); }
+.zy-table th { color: var(--text-1); font-weight: var(--fw-medium); background: var(--table-head-bg); }
+.zy-table tbody tr:hover { background: var(--table-hover-bg); }
 .zy-table .op a { color: var(--link); margin-right: 12px; text-decoration: none; }
 
 /* ---------- 警告提示 ---------- */
 .zy-alert { padding: 10px 16px; border-radius: var(--radius-4); font-size: var(--fs-14); margin-bottom: var(--sp-s); display: flex; gap: var(--sp-xs); align-items: flex-start; }
-.zy-alert-success { background: rgba(0,179,79,0.1); color: var(--success); }
-.zy-alert-warning { background: rgba(250,128,21,0.1); color: var(--warning); }
-.zy-alert-error   { background: rgba(205,24,1,0.1); color: var(--error); }
-.zy-alert-info    { background: rgba(26,103,248,0.1); color: var(--primary); }
+/* 背景统一走语义令牌；成功态文字改用更深的绿（--success 在近白底约 2.8:1，不达 AA） */
+.zy-alert-success { background: var(--success-bg); color: var(--aux-green-02); }
+.zy-alert-warning { background: var(--warning-bg); color: var(--warning); }
+.zy-alert-error   { background: var(--error-bg); color: var(--error); }
+.zy-alert-info    { background: var(--primary-bg); color: var(--primary); }
 
 /* ---------- 步骤条 ---------- */
 .zy-steps { display: flex; gap: var(--sp-m); }
@@ -109,26 +121,27 @@ body {
 
 /* ---------- 分割线 ---------- */
 .zy-divider-h { height: 1px; background: var(--border); margin: var(--sp-s) 0; border: 0; }
-.zy-divider-v { width: 1px; background: var(--border); display: inline-block; vertical-align: middle; }
+.zy-divider-v { width: 1px; height: 1em; background: var(--border); display: inline-block; vertical-align: middle; }
 .zy-divider-text { display: flex; align-items: center; color: var(--text-3); font-size: var(--fs-12); }
 .zy-divider-text::before, .zy-divider-text::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .zy-divider-text span { padding: 0 var(--sp-xs); }
 
 /* ---------- 对话框 / 遮罩 ---------- */
-.zy-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; }
-.zy-modal { background: var(--white); border-radius: var(--radius-md); box-shadow: var(--shadow-3-md); min-width: 360px; padding: var(--sp-m); }
+/* z-index 保证遮罩盖在其它定位元素之上；overflow:auto + margin:auto 保证超高弹窗可完整滚动 */
+.zy-mask { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.3); display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: var(--sp-m); }
+.zy-modal { background: var(--white); border-radius: var(--radius-md); box-shadow: var(--shadow-3-md); min-width: min(360px, 100%); max-width: 100%; margin: auto; padding: var(--sp-m); }
 .zy-modal-title { font-size: var(--fs-16); color: var(--text-1); font-weight: var(--fw-medium); margin-bottom: var(--sp-s); }
 .zy-modal-footer { display: flex; justify-content: flex-end; gap: var(--sp-xs); margin-top: var(--sp-m); }
 
 /* ---------- 徽标 ---------- */
 .zy-badge { position: relative; display: inline-block; }
-.zy-badge .count { position: absolute; top: -6px; right: -10px; background: var(--aux-red); color: #fff; border-radius: var(--radius-round); font-size: 11px; padding: 0 5px; line-height: 16px; }
+.zy-badge .count { position: absolute; top: -6px; right: -10px; background: var(--aux-red); color: var(--white); border-radius: var(--radius-round); font-size: var(--fs-12); padding: 0 5px; min-width: 16px; text-align: center; line-height: 16px; }
 
 /* ---------- 空状态 ---------- */
 .zy-empty { text-align: center; color: var(--text-3); padding: var(--sp-xxl) 0; }
 
 /* ---------- Toast / 全局提示 ---------- */
-.zy-toast { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 16px; border-radius: var(--radius-4); font-size: var(--fs-14); z-index: 999; }
+.zy-toast { position: fixed; top: var(--sp-m); left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: var(--white); padding: 10px 16px; border-radius: var(--radius-4); font-size: var(--fs-14); z-index: 999; pointer-events: none; max-width: min(90vw, 480px); text-align: center; }
 
 /* ---------- 间距工具类（8 基准） ---------- */
 .gap-xs { gap: var(--sp-xs); } .gap-s { gap: var(--sp-s); } .gap-m { gap: var(--sp-m); }

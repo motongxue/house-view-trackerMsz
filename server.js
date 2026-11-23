@@ -32,9 +32,20 @@ const ROOT = path.join(__dirname, 'public');
 // HVT_DB=embedded 时改用内嵌 PostgreSQL（PGlite/WASM），服务器上无需安装任何数据库。
 // 两者的 query(sql, params) → { rows, rowCount } 语义一致，业务 SQL 零改动。
 const EMBEDDED_DB = process.env.HVT_DB === 'embedded';
+// 连外部 PostgreSQL 时，口令必须来自环境变量（生产由部署脚本随机生成写入 .env）。
+// 这里只做提示不抛错：漏配时让 pg 自己报「password authentication failed」，
+// 但先把「该去配 PGPASSWORD」这句话说在前面，免得对着一句认证失败无从下手。
+if (!EMBEDDED_DB && !dbConfig.password) {
+  console.warn('[SECURITY] 未设置数据库口令 PGPASSWORD：将以空口令连接 ' +
+    dbConfig.user + '@' + dbConfig.host + ':' + dbConfig.port + '/' + dbConfig.database +
+    '。请把部署脚本生成的随机口令写入 .env 的 PGPASSWORD 后重启；' +
+    '若用内嵌库启动，请设 HVT_DB=embedded。');
+}
 const pool = EMBEDDED_DB
   ? require('./config/db-embedded')
   : new Pool(dbConfig);
+// 成交记录去重唯一索引是否可用（历史重复数据会导致建索引失败，此时回退应用层去重）
+let dealsDedupReady = false;
 
 // ---------- 安全响应头 ----------
 // 统一在 API / 静态资源 / 上传响应上附加；媒体文件再叠加更严格的独立 CSP。
@@ -74,8 +85,9 @@ const loginFails = new Map(); // ip -> { count, first }
 const LOGIN_MAX = 10;
 const LOGIN_WINDOW = 15 * 60 * 1000;
 function clientIp(req) {
-  const xff = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return xff || (req.socket && req.socket.remoteAddress) || 'unknown';
+  // 服务器实测直连公网、无反向代理：X-Forwarded-For 可任意伪造，绝不采信。
+  // 只取真实 TCP 对端地址；调用方的 .slice(0,64) 等截断处理保持兼容。
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 function loginLimited(ip) {
   const e = loginFails.get(ip);
@@ -223,6 +235,25 @@ function isPrivateIp(ip) {
   if (l === '::1' || l === '::' || l.startsWith('fe80') || l.startsWith('fc') || l.startsWith('fd')) return true;
   return false;
 }
+// ---------- DNS 固定：缓解 DNS rebinding ----------
+// assertSafeUrl 校验通过后，把该主机名短期「钉」到已校验的 IP。
+// Node 内置 fetch 底层走 net.connect → dns.lookup（回调版），这里让它在 TTL 内复用同一个 IP，
+// 避免「校验时是公网 IP、真正连接时被改解析成内网 IP」的绕过。只影响被显式校验过的主机名。
+const DNS_PIN_TTL = 30 * 1000;
+const dnsPins = new Map(); // hostname -> { ip, family, expires }
+const origDnsLookup = dns.lookup;
+dns.lookup = function pinnedLookup(hostname, options, callback) {
+  let cb = callback, opts = options;
+  if (typeof options === 'function') { cb = options; opts = {}; }
+  const pin = dnsPins.get(String(hostname || '').toLowerCase());
+  if (pin && pin.expires > Date.now() && typeof cb === 'function') {
+    const family = (opts && opts.family) || pin.family || (net.isIPv6(pin.ip) ? 6 : 4);
+    if (opts && opts.all) return process.nextTick(() => cb(null, [{ address: pin.ip, family }]));
+    return process.nextTick(() => cb(null, pin.ip, family));
+  }
+  return origDnsLookup.call(dns, hostname, options, callback);
+};
+
 async function assertSafeUrl(target) {
   let u;
   try { u = new URL(target); } catch { throw new Error('链接格式不正确'); }
@@ -230,6 +261,15 @@ async function assertSafeUrl(target) {
   // 注意：必须用 dns.promises.lookup（回调版漏 callback 会对所有链接抛错，导致整条抓取链路失效）
   const addrs = await dns.promises.lookup(u.hostname, { all: true });
   for (const a of addrs) { if (isPrivateIp(a.address)) throw new Error('该链接指向内网/受限地址，已拒绝'); }
+  // 钉住已校验的 IP，供后续 fetch 的实际连接复用（见上方 pinnedLookup）
+  const pick = addrs.find((a) => !isPrivateIp(a.address)) || addrs[0];
+  if (pick) {
+    dnsPins.set(u.hostname.toLowerCase(), {
+      ip: pick.address,
+      family: pick.family || (net.isIPv6(pick.address) ? 6 : 4),
+      expires: Date.now() + DNS_PIN_TTL
+    });
+  }
   return u;
 }
 
@@ -406,6 +446,15 @@ async function ensureSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS community_deals_lookup_idx ON community_deals(owner_id, city, district, community);`);
+  // NULL-safe 去重唯一索引：与批量导入「同小区+户型+面积+成交日期视为同一条」的应用层规则一致。
+  // 建立失败（例如库里已有历史重复行）不阻断启动，批量导入会回退到原来的 SELECT 去重。
+  try {
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS community_deals_dedup_idx ON community_deals
+      (owner_id, city, district, community, layout, COALESCE(area, -1), COALESCE(deal_date, DATE '0001-01-01'));`);
+    dealsDedupReady = true;
+  } catch (e) {
+    console.warn('⚠️ 成交记录去重唯一索引创建失败，批量导入沿用应用层去重：', e.message);
+  }
   // 购房知识：用户上传的资料（按账号隔离，系统内置知识走前端静态数据、全账号共享）
   await pool.query(`
     CREATE TABLE IF NOT EXISTS knowledge_files (
@@ -758,7 +807,7 @@ const { createUpgrader } = require('./upgrade');
 const upgrader = createUpgrader({
   appDir: __dirname,
   dataDir: (typeof EMBEDDED_DB !== 'undefined' && EMBEDDED_DB && require('./config/db-embedded').embeddedDataDir()) || path.join(__dirname, 'data'),
-  serviceName: 'house-view-tracker',
+  serviceName: process.env.HVT_SERVICE_NAME || 'house-view-tracker',
   assertSafeUrl,
   log: console.log
 });
@@ -976,7 +1025,11 @@ async function handleUpload(req, res) {
   }
 
   // 路径 B：新方式（房源图片/视频）直接传二进制文件，流式落盘，不占内存
-  const rawName = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : 'file';
+  let rawName = 'file';
+  if (req.headers['x-filename']) {
+    try { rawName = decodeURIComponent(req.headers['x-filename']); }
+    catch (_) { return sendJSON(res, 400, { error: '文件名编码无效' }); }
+  }
   let ext = (path.extname(rawName) || '').replace(/^\./, '').toLowerCase();
   if (!ALLOWED_EXT.has(ext)) {
     const e2 = CT_EXT[ctype];
@@ -985,7 +1038,9 @@ async function handleUpload(req, res) {
   }
   const fname = newName() + '.' + ext;
   const dest = path.join(mediaDir, fname);
-  if (!path.normalize(dest).startsWith(mediaDir)) return sendJSON(res, 400, { error: '非法文件名' });
+  // 用 ROOT + 分隔符比较，避免 media-evil 这类同前缀兄弟目录绕过
+  const mediaPrefix = mediaDir.endsWith(path.sep) ? mediaDir : mediaDir + path.sep;
+  if (!path.normalize(dest).startsWith(mediaPrefix)) return sendJSON(res, 400, { error: '非法文件名' });
 
   // 一次性结算守卫：无论成功/失败只响应一次，且响应前检查 socket 是否已断开，
   // 避免「已结束/已销毁的 socket 还去写 → 抛异常 → 进程崩溃 → 连接被重置（ERR_CONNECTION_RESET）」
@@ -1021,7 +1076,15 @@ async function handleUpload(req, res) {
   ws.on('drain', () => { if (!aborted) req.resume(); });
   req.on('aborted', () => { if (!aborted) { aborted = true; cleanup(); console.log('[upload] !! 客户端中断连接（aborted）', { received, chunks }); } }); // 客户端中断：只清理，不回复（对方已断开）
   req.on('error', (e) => { if (!aborted) { aborted = true; cleanup(); console.log('[upload] !! req 错误', e && e.message); fail(e); } });
-  ws.on('error', (e) => { if (!aborted) { aborted = true; cleanup(); console.log('[upload] !! 写文件错误', e && e.message); fail(e); } });
+  ws.on('error', (e) => {
+    if (aborted) return;
+    aborted = true;
+    cleanup();
+    console.log('[upload] !! 写文件错误', e && e.message);
+    fail(e);
+    // req 可能因背压已被 pause()，只 destroy ws 会让它永远悬挂；回复后主动销毁请求流
+    try { req.destroy(); } catch (_) {}
+  });
   ws.on('finish', () => { if (!aborted) { console.log('[upload] <<< 文件写入完成', { received, chunks, dest }); reply(200, { data: { url: '/media/' + fname } }); } });
   req.on('end', () => { if (!aborted) { console.log('[upload] <<< 请求体接收完毕', { received, chunks }); ws.end(); } });
   return;
@@ -1376,7 +1439,7 @@ async function handleApi(req, res, url) {
     try {
       const name = body.name ? String(body.name).trim().slice(0, 40) : null;
       const r = await pool.query(
-        'INSERT INTO users (email, password_hash, name, avatar) VALUES ($1,$2,$3,$4) RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider',
+        'INSERT INTO users (email, password_hash, name, avatar) VALUES ($1,$2,$3,$4) RETURNING id, email, name, avatar, demand, amap_js_key, amap_security_code, map_enabled, token_version, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider',
         [email, hash, name, null]
       );
       const r0 = r.rows[0];
@@ -1774,9 +1837,8 @@ async function handleApi(req, res, url) {
 
   // 一键导入示例数据（写入当前登录用户名下，5 条成都房源）
   if (pathname === '/api/properties/seed' && method === 'POST') {
-    const inserted = [];
-    for (const s of SEED_SAMPLE_DATA) inserted.push(await insertProperty(uid, s));
-      return sendJSON(res, 201, { data: inserted });
+    const inserted = await Promise.all(SEED_SAMPLE_DATA.map((s) => insertProperty(uid, s)));
+    return sendJSON(res, 201, { data: inserted });
   }
 
   // 批量导入（CSV 导入等，接收房源对象数组）
@@ -1784,8 +1846,13 @@ async function handleApi(req, res, url) {
     let body;
     try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
     const rows = Array.isArray(body) ? body : (body && body.rows) || [];
+    // 分块并发插入：避免逐条 await 的 N 次串行往返，也避免一次性 Promise.all 压垮连接池
     const inserted = [];
-    for (const s of rows) inserted.push(await insertProperty(uid, s || {}));
+    const CHUNK = 20;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const part = await Promise.all(rows.slice(i, i + CHUNK).map((s) => insertProperty(uid, s || {})));
+      inserted.push(...part);
+    }
     return sendJSON(res, 201, { data: inserted });
   }
 
@@ -1839,6 +1906,9 @@ async function handleApi(req, res, url) {
   const fup = pathname.match(/^\/api\/properties\/([^/]+)\/followups$/);
   if (fup && (method === 'GET' || method === 'POST')) {
     const pid = fup[1];
+    // 先校验房源归属：未传自己的 pid 与越权传他人 pid 都明确 404，前端可区分「无权限/不存在」
+    const own = await pool.query('SELECT 1 FROM properties WHERE id=$1 AND owner_id=$2', [pid, uid]);
+    if (!own.rowCount) return sendJSON(res, 404, { error: '未找到该房源或无权限' });
     if (method === 'GET') {
       const r = await pool.query(
         'SELECT * FROM property_followups WHERE property_id=$1 AND owner_id=$2 ORDER BY COALESCE(happened_date, created_at::date) DESC, created_at DESC',
@@ -1925,22 +1995,37 @@ async function handleApi(req, res, url) {
     try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
     const rows = Array.isArray(body) ? body : (Array.isArray(body.rows) ? body.rows : []);
     let added = 0, skipped = 0;
+    const valid = [];
     for (const item of rows) {
       const f = dealFields(item);
       if (!f.community) { skipped++; continue; }
-      const dup = await pool.query(
-        `SELECT 1 FROM community_deals WHERE owner_id=$1 AND community=$2 AND city=$3 AND district=$4
-          AND layout=$5 AND area IS NOT DISTINCT FROM $6 AND deal_date IS NOT DISTINCT FROM $7 LIMIT 1`,
-        [uid, f.community, f.city, f.district, f.layout, f.area, f.deal_date]
-      );
-      if (dup.rowCount) { skipped++; continue; }
-      await pool.query(
-        `INSERT INTO community_deals
+      valid.push(f);
+    }
+    const paramsOf = (f) => [uid, f.city, f.district, f.community, f.layout, f.area, f.floor, f.total_price, f.unit_price, f.list_price, f.deal_date, f.deal_cycle, f.agent];
+    const insertSql = `INSERT INTO community_deals
           (owner_id, city, district, community, layout, area, floor, total_price, unit_price, list_price, deal_date, deal_cycle, agent)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [uid, f.city, f.district, f.community, f.layout, f.area, f.floor, f.total_price, f.unit_price, f.list_price, f.deal_date, f.deal_cycle, f.agent]
-      );
-      added++;
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`;
+    if (dealsDedupReady) {
+      // 唯一索引保证并发批次也不会插重复；ON CONFLICT 省掉每行一次 SELECT 往返
+      const CHUNK = 20;
+      for (let i = 0; i < valid.length; i += CHUNK) {
+        const results = await Promise.all(valid.slice(i, i + CHUNK).map((f) => pool.query(
+          insertSql + ' ON CONFLICT DO NOTHING RETURNING id', paramsOf(f)
+        )));
+        for (const r of results) { if (r.rowCount) added++; else skipped++; }
+      }
+    } else {
+      // 历史库无法建唯一索引时回退原有应用层去重（保持行为兼容）
+      for (const f of valid) {
+        const dup = await pool.query(
+          `SELECT 1 FROM community_deals WHERE owner_id=$1 AND community=$2 AND city=$3 AND district=$4
+            AND layout=$5 AND area IS NOT DISTINCT FROM $6 AND deal_date IS NOT DISTINCT FROM $7 LIMIT 1`,
+          [uid, f.community, f.city, f.district, f.layout, f.area, f.deal_date]
+        );
+        if (dup.rowCount) { skipped++; continue; }
+        await pool.query(insertSql, paramsOf(f));
+        added++;
+      }
     }
     return sendJSON(res, 200, { data: { added, skipped } });
   }
@@ -2045,7 +2130,17 @@ async function handleApi(req, res, url) {
       'Content-Disposition': 'attachment; filename="' + encodeURIComponent(row.filename) + '"'
     });
     res.writeHead(200, fileHeaders);
-    fs.createReadStream(row.stored_path).pipe(res);
+    const rs = fs.createReadStream(row.stored_path);
+    rs.on('error', (e) => {
+      console.error('[knowledge] 读取文件失败：' + row.stored_path, e && e.message);
+      if (!res.headersSent) {
+        head(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('读取文件失败');
+      } else {
+        try { res.destroy(); } catch (_) {}
+      }
+    });
+    rs.pipe(res);
     return;
   }
   const kd = pathname.match(/^\/api\/knowledge\/([^/]+)$/);
@@ -2054,8 +2149,10 @@ async function handleApi(req, res, url) {
     if (!uid) return sendJSON(res, 401, { error: '未登录' });
     const r = await pool.query('SELECT * FROM knowledge_files WHERE id=$1 AND owner_id=$2', [kd[1], uid]);
     if (!r.rows.length) return sendJSON(res, 404, { error: '未找到该资料或无权限' });
-    try { fs.unlinkSync(r.rows[0].stored_path); } catch (_) {}
+    // 先删库记录再删物理文件：若 unlink 失败，至少不会留下「库里已无、磁盘残留」无法再清理的孤儿文件
     await pool.query('DELETE FROM knowledge_files WHERE id=$1 AND owner_id=$2', [kd[1], uid]);
+    try { fs.unlinkSync(r.rows[0].stored_path); }
+    catch (e) { console.warn('[knowledge] 库记录已删，但磁盘文件删除失败（' + r.rows[0].stored_path + '）：' + e.message); }
     return sendJSON(res, 200, { data: { ok: true } });
   }
 
@@ -2271,17 +2368,27 @@ async function handleApi(req, res, url) {
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      const reader = resp.body.getReader();
+      let clientClosed = false;
+      // 浏览器断开后停止读取上游流，避免继续把整个 SSE 读进一个已死的连接
+      const onClose = () => {
+        if (clientClosed) return;
+        clientClosed = true;
+        try { reader.cancel(); } catch (_) {}
+      };
+      res.on('close', onClose);
       try {
-        const reader = resp.body.getReader();
         const decoder = new TextDecoder();
-        while (true) {
+        while (!clientClosed) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || clientClosed) break;
           res.write(decoder.decode(value, { stream: true }));
         }
-        res.end();
+        if (!clientClosed) res.end();
       } catch (e) {
         try { res.end('data: ' + JSON.stringify({ error: '流式转发失败：' + e.message }) + '\n\n'); } catch (_) {}
+      } finally {
+        res.removeListener('close', onClose);
       }
       return;
     }
@@ -2411,10 +2518,14 @@ const MIME = {
 const FRAMEABLE_PAGES = new Set(['/floorplan.html', '/floorplan-designer.html']);
 
 function serveStatic(req, res, url) {
-  let urlPath = decodeURIComponent(url.pathname.split('?')[0]);
+  let urlPath;
+  try { urlPath = decodeURIComponent(url.pathname.split('?')[0]); }
+  catch (_) { head(res, 400, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Bad Request'); return; }
   if (urlPath === '/') urlPath = '/index.html';
   const filePath = path.normalize(path.join(ROOT, urlPath));
-  if (!filePath.startsWith(ROOT)) { head(res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Forbidden'); return; }
+  // 用 ROOT + 分隔符比较，避免 /app/public-evil 这类同前缀兄弟目录绕过
+  const rootPrefix = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
+  if (filePath !== ROOT && !filePath.startsWith(rootPrefix)) { head(res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Forbidden'); return; }
   fs.readFile(filePath, (err, data) => {
     if (err) { head(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found'); return; }
     const ext = path.extname(filePath).toLowerCase();
@@ -2453,6 +2564,24 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, url);
 });
 
+// 优雅关闭：SIGTERM/SIGINT 时先停止接收新连接，等 in-flight 初始化/查询结算后
+// 关闭连接池（内嵌 PGlite 亦实现了 end()），避免未落盘的写入丢失或实例泄漏。
+let shuttingDown = false;
+function gracefulShutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('收到 ' + sig + '，正在关闭服务…');
+  try { server.close(); } catch (_) {}
+  const force = setTimeout(() => process.exit(0), 5000); // end() 卡住时的兜底
+  force.unref();
+  Promise.resolve()
+    .then(() => (typeof pool.end === 'function' ? pool.end() : null))
+    .catch((e) => console.error('关闭数据库连接失败：' + e.message))
+    .finally(() => { clearTimeout(force); process.exit(0); });
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 async function start() {
   try {
     await pool.query('SELECT 1');
@@ -2463,13 +2592,20 @@ async function start() {
       console.error('   请检查：数据目录是否可写、磁盘空间是否充足、包内 node_modules/@electric-sql/pglite 是否完整。');
       process.exit(1);
     }
-    console.error('   请确认 PostgreSQL 服务已启动，且 config/db.js 中的账号密码正确。');
+    if (!dbConfig.password) {
+      // 空口令时 pg 会抛 SASL: client password must be a string，字面看着像程序 bug，
+      // 这里把真正的原因顶上来，避免排查跑偏。
+      console.error('   原因很可能是没有配置数据库口令：请在 .env 里设置 PGPASSWORD（生产用部署脚本随机生成的那个），或在 config/db.js 所在目录旁的 .env 补上后重启。');
+    } else {
+      console.error('   请确认 PostgreSQL 服务已启动，且 .env 中的 PGPASSWORD 与账号匹配。');
+    }
   }
   try {
     await ensureSchema();
     console.log('✅ 数据表已就绪（users / properties）');
   } catch (e) {
     console.error('⚠️ 建表失败：', e.message);
+    if (!EMBEDDED_DB && !dbConfig.password) console.error('   （同上：PGPASSWORD 未配置，数据库不可用，所有接口都会失败）');
     if (EMBEDDED_DB) process.exit(1);
   }
   // 一键升级：若上次状态停在 restarting，说明服务已成功拉起，补写 done 供前端轮询读取。

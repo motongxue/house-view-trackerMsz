@@ -351,12 +351,12 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
 <div id="toast"></div>
 
 <!-- HVT 扩展：内置户型包（本地纯数据，零外部请求；缺文件时自动回退原始三室两厅） -->
-<script src="./js/floorplan-layouts.js?v=v1.10.1"></script>
+<script src="./js/floorplan-layouts.js?v=v1.10.2"></script>
 <!-- HVT 扩展：外部户型方案导入（JSON / 技能 HTML / 技能 ZIP → HouseSpec → 本页几何） -->
-<script src="./js/vendor/jszip.min.js?v=v1.10.1"></script>
-<script src="./js/house-spec-convert.js?v=v1.10.1"></script>
-<script src="./js/floorplan-import-spec.js?v=v1.10.1"></script>
-<script src="./js/floorplan-auto-furnish.js?v=v1.10.1"></script>
+<script src="./js/vendor/jszip.min.js?v=v1.10.2"></script>
+<script src="./js/house-spec-convert.js?v=v1.10.2"></script>
+<script src="./js/floorplan-import-spec.js?v=v1.10.2"></script>
+<script src="./js/floorplan-auto-furnish.js?v=v1.10.2"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -575,7 +575,11 @@ function load(){
 function fixState(s){
   const d = defaultState();
   s.rooms = Object.assign(d.rooms, s.rooms || {});
-  s.demolished = s.demolished || []; s.measures = s.measures || [];
+  // F387: 过滤掉指向不存在墙体的位置型拆墙 id（'w'+index），避免几何替换后 overviewPanel 的
+  // state.demolished.map(id => WALLS[+id.slice(1)]) 得到 undefined 再访问 w[2] 抛错。
+  s.demolished = (Array.isArray(s.demolished) ? s.demolished : []).filter(id =>
+    typeof id === 'string' && /^w\d+$/.test(id) && +id.slice(1) >= 0 && +id.slice(1) < WALLS.length);
+  s.measures = s.measures || [];
   s.layout = HVT_LAYOUT_ID;   // HVT：补房型标记，之后 save() 会带上
   return s;
 }
@@ -1542,6 +1546,8 @@ $('#fileIn').onchange = e => {
 // HVT：把参数生成器产出的几何应用到当前页面（运行时替换墙体/房间，不刷新、不重启）
 function applyGeometry(s){
   WALLS = s.WALLS; WINS = s.WINS; DOORS = s.DOORS; SLIDES = s.SLIDES; ROOMS = s.ROOMS;
+  // F387: 几何整体替换后，旧的位置型拆墙记录（'w'+index）指向的是旧墙体，作废以免指向无关墙或越界
+  if (typeof state !== 'undefined' && state && Array.isArray(state.demolished)) state.demolished = [];
   HVT_LAYOUT = Object.assign({}, HVT_LAYOUT, {
     name: (s.layout === 'custom' ? '自绘户型' : (s.layout || '自定义户型')) + ' · 装修设计',
     bounds: s.bounds || HVT_LAYOUT.bounds,
@@ -1600,7 +1606,7 @@ window.__hvtApplyInternalState = function(s){
   toast(tr('方案已导入', 'Plan imported') + (s.WALLS ? tr('（含户型几何）', ' (with geometry)') : ''));
   return true;
 };
-$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v1.10.1', 'hvt_editor', 'width=1280,height=920');
+$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v1.10.2', 'hvt_editor', 'width=1280,height=920');
 $('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; window.__hvtImportedSpec = false;
   if (window.__hvtBrand0){ const bd = document.querySelector('.brand b'); if (bd){ bd.dataset.zh = window.__hvtBrand0.zh; bd.dataset.en = window.__hvtBrand0.en; applyStaticLang(); } }
   commit(b); renderAll(); } };
@@ -1743,7 +1749,7 @@ function init(){
   scene.add(hemi, sun, sun.target, ground);
 
   const pm = new THREE.PMREMGenerator(renderer); envTex = pm.fromScene(new RoomEnvironment(), .04).texture; pm.dispose();
-  glassMat = new THREE.MeshPhysicalMaterial({color:0xcfe6ef, roughness:.05, transparent:true, opacity:.28, depthWrite:false, side:THREE.DoubleSide});
+  glassMat = markShared(new THREE.MeshPhysicalMaterial({color:0xcfe6ef, roughness:.05, transparent:true, opacity:.28, depthWrite:false, side:THREE.DoubleSide}));
   wallMat = mat('#f4f1eb', {roughness:.92}); capMat = mat('#34312d', {roughness:.9}); frameMat = mat('#5d6166', {roughness:.5, metalness:.4});
 
   archFloor = new THREE.Group(); archUp = new THREE.Group(); furnG = new THREE.Group(); labelG = new THREE.Group(); lampG = new THREE.Group();
@@ -1808,6 +1814,10 @@ function init(){
 
 /* ======================= 材质 ======================= */
 const matCache = new Map();
+// F383: 记录所有跨重建复用的共享材质，clearGroup 只释放不在集合内的临时材质，
+// 避免误 dispose 共享材质/贴图导致后续重建渲染异常。
+const sharedMats = new Set();
+function markShared(m){ if (m) sharedMats.add(m); return m; }
 let envTex = null, envK = 1;
 function mat(color, o = {}){
   const key = color + JSON.stringify(o);
@@ -1815,7 +1825,7 @@ function mat(color, o = {}){
     const m = new THREE.MeshStandardMaterial({color, roughness:.7, ...o});
     // 金属 / 光滑表面挂环境反射，墙面等哑光材质不挂，避免整体变亮
     if (envTex && (m.metalness > 0 || m.roughness < .4)){ m.envMap = envTex; m.userData.env = m.metalness > .5 ? 1 : .5; m.envMapIntensity = m.userData.env*envK; }
-    matCache.set(key, m);
+    matCache.set(key, markShared(m));
   }
   return matCache.get(key);
 }
@@ -1862,7 +1872,7 @@ function floorMat(kind){
   const t = new THREE.CanvasTexture(cv);
   t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1/s.sx, 1/s.sy);
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  return floorMats[kind] = new THREE.MeshStandardMaterial({map:t, roughness:s.rough});
+  return floorMats[kind] = markShared(new THREE.MeshStandardMaterial({map:t, roughness:s.rough}));
 }
 
 /* ======================= 几何小工具（y = 底面高度） ======================= */
@@ -2451,7 +2461,20 @@ function buildFurniture(f){
 }
 
 /* ======================= 建筑 ======================= */
-function clearGroup(g){ g.traverse(o => { if (o.geometry) o.geometry.dispose(); }); g.clear(); }
+function clearGroup(g){
+  // F383: 释放几何 + 非共享材质（含其贴图），但跳过 mat()/floorMat()/全局单例等共享材质，
+  // 否则反复导入/切墙会不断新建材质与其 canvas 贴图却在 GPU 累积，既不误删可复用资源也不泄漏。
+  g.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+    ms.forEach(m => {
+      if (!m || sharedMats.has(m)) return;
+      if (m.map && typeof m.map.dispose === 'function') m.map.dispose();
+      m.dispose();
+    });
+  });
+  g.clear();
+}
 function wallBox([x0, y0, x1, y1], yb, yt, m){
   if (yt - yb <= .001) return;
   const o = new THREE.Mesh(new THREE.BoxGeometry(M(x1-x0), yt-yb, M(y1-y0)), m || [wallMat, wallMat, capMat, wallMat, wallMat, wallMat]);
@@ -2463,7 +2486,7 @@ function wallBox([x0, y0, x1, y1], yb, yt, m){
     sk.position.set(o.position.x, sh/2, o.position.z); sk.userData.walkOnly = true; sk.visible = opt.mode === 'walk'; archUp.add(sk);
   }
 }
-const edgeMat = new THREE.LineBasicMaterial({color:0x6f675b}), skirtMat = new THREE.MeshStandardMaterial({color:'#8b7f6e', roughness:.6});
+const edgeMat = markShared(new THREE.LineBasicMaterial({color:0x6f675b})), skirtMat = markShared(new THREE.MeshStandardMaterial({color:'#8b7f6e', roughness:.6}));
 function shapeOf(poly, flip){ const s = new THREE.Shape(); poly.forEach(([x, y], i) => s[i ? 'lineTo' : 'moveTo'](wx(x), flip ? wz(y) : -wz(y))); return s; }
 
 function buildArch(){

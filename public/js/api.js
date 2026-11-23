@@ -20,6 +20,31 @@ const Api = (function () {
     try { return u ? JSON.parse(u) : null; } catch { return null; }
   }
 
+  // 以下助手由 request / uploadFile 共用，避免两处逻辑漂移（F037 / F163 / F256）。
+  // 网络错误：区分「取消/超时」与「后端未启动」，并用 cause 保留原始错误（CORS / DNS / Abort 等）。
+  function networkError(e) {
+    const aborted = !!(e && (e.name === 'AbortError' || e.name === 'TimeoutError'));
+    const msg = aborted
+      ? '请求已取消或超时，请重试'
+      : '无法连接服务器：请确认 npm start 已运行（本地后端默认 http://127.0.0.1:8787）';
+    return new Error(msg, { cause: e });
+  }
+  // HTTP 错误：携带令牌却返回 401（未登录/过期）→ 清本地会话并通知界面回登录页，并带上 err.status。
+  // 登录接口本身不带令牌，其 401（密码错误）不满足 tk 条件，不会误触发退出。
+  function httpFail(res, data, tk, fallback) {
+    if (res.status === 401 && tk) {
+      setSession(null);
+      try { window.dispatchEvent(new CustomEvent('hvt:unauthorized')); } catch (e) {}
+    }
+    const msg = (data && data.error) ? data.error : (fallback + '（HTTP ' + res.status + '）');
+    const err = new Error(msg);
+    err.status = res.status;
+    return err;
+  }
+  async function parseBody(res) {
+    try { return await res.json(); } catch (e) { return null; /* 可能无响应体 */ }
+  }
+
   async function request(method, path, body) {
     const headers = { 'Content-Type': 'application/json' };
     const tk = token();
@@ -32,21 +57,10 @@ const Api = (function () {
         body: body != null ? JSON.stringify(body) : undefined
       });
     } catch (e) {
-      // 网络层错误（后端没起来等）
-      throw new Error('无法连接服务器：请确认 npm start 已运行（本地后端默认 http://127.0.0.1:8787）');
+      throw networkError(e);
     }
-    let data = null;
-    try { data = await res.json(); } catch { /* 可能无响应体 */ }
-    if (!res.ok) {
-      // 会话失效：携带令牌却返回 401（未登录/过期）→ 清本地会话并通知界面回登录页。
-      // 登录接口本身不带令牌，其 401（密码错误）不满足 tk 条件，不会误触发退出。
-      if (res.status === 401 && tk) {
-        setSession(null);
-        try { window.dispatchEvent(new CustomEvent('hvt:unauthorized')); } catch (e) {}
-      }
-      const msg = (data && data.error) ? data.error : ('请求失败（HTTP ' + res.status + '）');
-      const err = new Error(msg); err.status = res.status; throw err;
-    }
+    const data = await parseBody(res);
+    if (!res.ok) throw httpFail(res, data, tk, '请求失败');
     return data;
   }
 
@@ -94,14 +108,11 @@ const Api = (function () {
       try {
         res = await fetch(BASE + path, { method: 'POST', headers, body: file });
       } catch (e) {
-        throw new Error('无法连接服务器：请确认 npm start 已运行（本地后端默认 http://127.0.0.1:8787）');
+        throw networkError(e);
       }
-      let data = null;
-      try { data = await res.json(); } catch (e) { /* 可能无响应体 */ }
-      if (!res.ok) {
-        const msg = (data && data.error) ? data.error : ('上传失败（HTTP ' + res.status + '）');
-        throw new Error(msg);
-      }
+      const data = await parseBody(res);
+      // 与 request 共用同一段 401 处理：补 err.status、清会话、派发 hvt:unauthorized（F256）
+      if (!res.ok) throw httpFail(res, data, tk, '上传失败');
       return data;
     }
   };

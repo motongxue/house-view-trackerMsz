@@ -8,7 +8,7 @@
 /* ---------- 别名：把应用原有语义变量映射到规范 tokens ---------- */
 :root {
   --panel: var(--white);
-  --panel-2: #FAFAFA;
+  --panel-2: var(--panel-alt);
   --line: var(--border);
   --line-strong: var(--border-strong);
   --text: var(--text-1);
@@ -18,7 +18,7 @@
   --danger: var(--aux-red-03);
   --danger-bg: var(--aux-red-09);
   --ok: var(--success);
-  --ok-bg: rgba(0, 179, 79, 0.10);
+  --ok-bg: var(--success-bg);
   --radius: var(--radius-md);
   --radius-sm: var(--radius-4);
   --shadow: var(--shadow-1-sm);
@@ -1020,9 +1020,10 @@ body.dark {
   --muted: #8b93a7; --disabled: #566074;
   --border: #2a3040; --border-strong: #3a4152;
   --line: #2a3040; --line-strong: #3a4152;
-  --border-1: 1px solid var(--border);
-  --border-2: 2px solid var(--border);
-  --border-dashed: 1px dashed var(--border);
+  /* --border-1/2/dashed 继承 tokens.css，其中的 var(--border) 会在此处解析为深色边框，无需重复定义 */
+  --panel-3: rgba(93, 156, 236, 0.10); /* 深色下降低叠加亮度 */
+  --table-head-bg: #242936;
+  --table-hover-bg: rgba(93, 156, 236, 0.16);
   background: #14161c;
   color: var(--text-2);
 }
@@ -1037,6 +1038,8 @@ body.dark .wm-row input[type=number],
 body.dark .map-tip {
   background: #242936; border-color: #3a4152; color: #e8eaee;
 }
+/* 深色下保留校验失败的红色信号，避免被上面的通用背景/边框覆盖 */
+body.dark .zy-input.error { background: var(--error-bg); border-color: var(--error); }
 body.dark .field input:focus, body.dark .field textarea:focus, body.dark .field select:focus,
 body.dark .zy-header .search:focus { border-color: var(--primary); }
 body.dark .zy-header .search::placeholder, body.dark .field input::placeholder,
@@ -2439,11 +2442,15 @@ body.dark .settings-modal .settings-main-head { background: #242936; }
 .settings-modal .settings-panel #d-notes { min-height: 96px; }
 .settings-modal .crumb { display: none; }
 body.modal-open { overflow: hidden; }
-@media (max-width: 720px) {
-  .settings-modal { width: 96vw; height: 92vh; }
+/* 与 .settings-layout 的 860px 断点统一，避免 721–860px 外层按两栏、内层已竖排造成溢出截断 */
+@media (max-width: 860px) {
+  .settings-modal { width: 96vw; height: auto; max-height: 92vh; }
   .settings-modal .settings-layout { flex-direction: column; height: auto; }
   .settings-modal .settings-sidebar { width: 100%; height: auto; flex-basis: auto; }
   .settings-modal .settings-main { overflow-y: visible; }
+  /* 窄屏保留细滚动条，内容超高时仍有可滚提示 */
+  .settings-modal .settings-modal-body { overflow-y: auto; scrollbar-width: thin; -ms-overflow-style: auto; }
+  .settings-modal .settings-modal-body::-webkit-scrollbar { width: 6px; display: block; }
 }
 
 /* AI 模型清单：2026-11-15 v8 —— 厂商为一级分组，模型为二级行；编辑走弹窗 */

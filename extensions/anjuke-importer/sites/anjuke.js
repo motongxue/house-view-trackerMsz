@@ -1,17 +1,17 @@
 /* sites/anjuke.js —— 安居客楼盘页适配器：两屏 Nuxt 数据 -> 统一字段字典。
  * 只负责「读页面」，不写字段清单、不生成 CSV、不做坐标归一化，全部交给 core.js。 */
 (function (root, factory) {
-  var CORE = (typeof module !== 'undefined' && module.exports)
+  const CORE = (typeof module !== 'undefined' && module.exports)
     ? require('../core.js')
     : (root && root.HVT_CORE);
-  var api = factory(CORE);
+  const api = factory(CORE);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.HVT_SITE_ANJUKE = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (C) {
   'use strict';
 
-  var id = 'anjuke';
-  var name = '安居客';
+  const id = 'anjuke';
+  const name = '安居客';
 
   function match(url) {
     return /^https?:\/\/m\.anjuke\.com\/[^/]+\/loupan\/\d+/.test(String(url || ''));
@@ -21,25 +21,28 @@
    * 函数体必须自包含：序列化后不引用任何闭包变量。 */
   function probeInPage() {
     try {
-      var st = window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.loupan;
+      const st = window.__NUXT__ && window.__NUXT__.state && window.__NUXT__.state.loupan;
       window.postMessage({
         __HVT__: 1, site: 'anjuke', url: window.location.href,
+        nonce: window.__HVT_NONCE__,
         ok: !!st, data: st ? JSON.stringify(st) : null
-      }, '*');
+      }, window.location.origin);
     } catch (e) {
-      window.postMessage({ __HVT__: 1, site: 'anjuke', url: window.location.href, ok: false, error: String(e) }, '*');
+      window.postMessage({ __HVT__: 1, site: 'anjuke', url: window.location.href,
+        nonce: window.__HVT_NONCE__, ok: false, error: String(e) }, window.location.origin);
     }
   }
 
   function detailGroups(params) {
-    var kv = {}, groups = [], permits = [];
-    var list = C.get(params, 'detail.loupanDetail') || [];
+    const kv = {}, groups = [], permits = [];
+    const list = C.get(params, 'detail.loupanDetail') || [];
     (Array.isArray(list) ? list : []).forEach(function (g) {
-      var item = { title: C.safeText(g && g.title), rows: [] }, cur = null;
+      const item = { title: C.safeText(g && g.title), rows: [] };
+      let cur = null;
       ((g && g.rows) || []).forEach(function (r) {
-        var d = (r && r.data) || {};
+        const d = (r && r.data) || {};
         if (!d.key) return;
-        var k = C.safeText(d.key), v = C.safeText(d.value);
+        const k = C.safeText(d.key), v = C.safeText(d.value);
         if (!(k in kv)) kv[k] = v;
         item.rows.push([k, v]);
         if (item.title === '预售许可证') {
@@ -54,13 +57,14 @@
   }
 
   function collectMedia(main) {
-    var images = [], floorPlans = [], environment = [], links = { videos: [], vr: [], sand: [] };
-    var linkItems = [];
-    (C.get(main, 'tabAlbums') || []).forEach(function (t) {
-      var slug = C.get(t, 'category.slug') || '';
-      var medias = (t && t.medias) || [];
-      var urls = medias.map(function (m) { return m && m.image_url; });
-      var acts = medias.map(function (m) { return m && m.action_url; });
+    const images = [], floorPlans = [], environment = [], links = { videos: [], vr: [], sand: [] };
+    let linkItems = [];
+    const tabAlbums = C.get(main, 'tabAlbums');
+    (Array.isArray(tabAlbums) ? tabAlbums : []).forEach(function (t) { // F146
+      const slug = C.get(t, 'category.slug') || '';
+      const medias = Array.isArray(t && t.medias) ? t.medias : []; // F147
+      const urls = medias.map(function (m) { return m && m.image_url; });
+      const acts = medias.map(function (m) { return m && m.action_url; });
       if (slug === 'loupan') images.push.apply(images, urls);
       else if (slug === 'layout') floorPlans.push.apply(floorPlans, urls);
       else if (slug === 'sand_table') { environment.push.apply(environment, urls); links.sand.push.apply(links.sand, acts); }
@@ -68,9 +72,9 @@
         // 播放页是 HTML 不是 mp4：封面只做外链卡片封面，不再混进小区环境图，
         // 否则用户点开只看到一张静态图（「感觉是张图片，无法播放」）。
         medias.forEach(function (m, i) {
-          var u = C.safeText(m && m.action_url);
+          const u = C.safeText(m && m.action_url);
           if (!/^https?:\/\//.test(u)) return;
-          var kind = slug === 'vr' ? 'vr' : 'video';
+          const kind = slug === 'vr' ? 'vr' : 'video';
           linkItems.push({
             kind: kind, url: u, cover: C.safeText(m && m.image_url),
             label: (kind === 'vr' ? '🌀 VR 看房' : '▶ 视频讲解') + (medias.length > 1 ? ' ' + (i + 1) : '')
@@ -80,7 +84,7 @@
       }
       else environment.push.apply(environment, urls);
     });
-    var seen = {};
+    const seen = {};
     linkItems = linkItems.filter(function (x) { if (seen[x.url]) return false; seen[x.url] = 1; return true; });
     return {
       images: C.uniq(images), floorPlans: C.uniq(floorPlans), environment: C.uniq(environment),
@@ -91,30 +95,34 @@
   }
 
   function extract(saved, meta) {
-    var main = saved.main || {}, params = saved.params || {};
+    const main = saved.main || {}, params = saved.params || {};
     meta = meta || {};
-    var info = C.get(params, 'detail.loupanInfo') || {};
-    var basic = C.get(main, 'loupanPageBlockInfo.loupan_basic') || {};
-    var g = detailGroups(params);
-    var media = collectMedia(main);
+    const info = C.get(params, 'detail.loupanInfo') || {};
+    const basic = C.get(main, 'loupanPageBlockInfo.loupan_basic') || {};
+    const g = detailGroups(params);
+    const media = collectMedia(main);
 
-    var title = C.safeText(info.loupan_name || C.get(basic, 'name.text'));
-    var city = C.safeText(C.get(info, 'location.city.name') || main.loupanCity && main.loupanCity.name);
-    var district = C.safeText(C.get(info, 'location.district.name') ||
+    const title = C.safeText(info.loupan_name || C.get(basic, 'name.text'));
+    const city = C.safeText(C.get(info, 'location.city.name') || main.loupanCity && main.loupanCity.name);
+    const district = C.safeText(C.get(info, 'location.district.name') ||
       C.get(main, 'districtAndBlockInfo.district_evaluation.district_name'));
-    var houseList = C.get(main, 'loupanPageBlockInfo.house_combo.house.list') || [];
-    var h0 = houseList[0] || {};
-    var loan = g.kv['房贷计算'] || '';
-    var downM = loan.match(/首付\s*([\d.]+)\s*万/), monthM = loan.match(/月供\s*([\d.]+)\s*元/);
+    const rawHouseList = C.get(main, 'loupanPageBlockInfo.house_combo.house.list');
+    const houseList = Array.isArray(rawHouseList) ? rawHouseList : []; // F148
+    const h0 = houseList[0] || {};
+    const loan = g.kv['房贷计算'] || '';
+    const downM = loan.match(/首付\s*([\d.]+)\s*万/), monthM = loan.match(/月供\s*([\d.]+)\s*元/);
     // 系统地图用高德坐标，优先取 params 的 gaode；只有主页面时退化到 surrounding（百度坐标）
-    var gaode = C.get(info, 'geo_location_map.gaode') || {};
-    var bd = C.get(main, 'loupanPageBlockInfo.surrounding.geo_location') || {};
-    var lng = C.coordNum(gaode.longitude || bd.longitude || '');
-    var lat = C.coordNum(gaode.latitude || bd.latitude || '');
-    var coordSource = gaode.longitude ? '高德' : (bd.longitude ? '百度(未校准)' : '');
-    var houseNumber = C.safeText(info.loupan_id || basic.id || meta.loupanId || meta.id);
+    const gaode = C.get(info, 'geo_location_map.gaode') || {};
+    const bd = C.get(main, 'loupanPageBlockInfo.surrounding.geo_location') || {};
+    // F024：0 是合法坐标，用显式判空代替 ||，避免误切换坐标源
+    const has = function (v) { return v !== null && v !== undefined && v !== ''; };
+    const pick = function (a, b) { return has(a) ? a : (has(b) ? b : ''); };
+    const lng = C.coordNum(pick(gaode.longitude, bd.longitude), false);
+    const lat = C.coordNum(pick(gaode.latitude, bd.latitude), true);
+    const coordSource = has(gaode.longitude) ? '高德' : (has(bd.longitude) ? '百度(未校准)' : '');
+    const houseNumber = C.safeText(info.loupan_id || basic.id || meta.loupanId || meta.id);
 
-    var fields = {
+    const fields = {
       'title': title,
       'location.province': C.provinceOf(city),
       'location.city': city,
@@ -138,11 +146,14 @@
     };
 
     // 备注：所有没进结构化字段的信息都留在这里，避免丢数据（内容/顺序与旧版逐字一致）
-    var lines = [];
+    const lines = [];
     lines.push('【来源】安居客 ' + C.safeText(meta.sourceUrl) + '（楼盘ID ' + houseNumber + '）');
     if (coordSource) lines.push('【坐标】' + coordSource + ' ' + lng + ',' + lat);
-    var tags = info.tags_all || (basic.tags || []).map(function (t) { return t && t.text; });
-    if (tags && tags.length) lines.push('【标签】' + tags.filter(Boolean).join('、'));
+    // F149：tags_all 与 basic.tags 两个分支都必须是数组
+    const rawTags = info.tags_all;
+    const tags = Array.isArray(rawTags) ? rawTags
+      : (Array.isArray(basic.tags) ? basic.tags.map(function (t) { return t && t.text; }) : []);
+    if (tags.length) lines.push('【标签】' + tags.filter(Boolean).join('、'));
     if (houseList.length) {
       lines.push('【主力户型】' + houseList.slice(0, 6).map(function (h) {
         return [h && h.alias, h && h.area, h && h.price_value ? (h.price_value + '万') : ''].filter(Boolean).join(' ');

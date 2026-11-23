@@ -1,7 +1,13 @@
 # 运行时数据与密钥（绝不入库）
 data/
 .env
+# .env.local / .env.production / *.env 等常见变体一并忽略
+.env*
 .token-secret
+*.pem
+*.key
+secrets/
+credentials.json
 node_modules/
 *.log
 

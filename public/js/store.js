@@ -95,23 +95,38 @@ const Store = (function () {
   // 只补空缺的 location.province / city，绝不改写已有 city / district 文本，避免影响筛选值。
   // 内存补全让列表 / 详情 / 筛选 / 导出立刻带上省份；同一登录态只静默写回一次数据库。
   let regionMigrated = false;
+  let migrationInFlight = false; // 防止并发 list() 重复启动同一批写回（F221）
   function migrateRows(rows) {
-    if (!window.Regions || !Array.isArray(rows)) return;
+    if (!window.Regions || !Array.isArray(rows) || regionMigrated || migrationInFlight) return;
     const changed = [];
     rows.forEach((p) => { if (Regions.migrate(p)) changed.push(p); });
-    if (!changed.length || regionMigrated) return;
-    regionMigrated = true;
+    if (!changed.length) return;
+    let tk = '', key = '';
     try {
-      const tk = sessionStorage.getItem('hvt_token') || localStorage.getItem('hvt_token') || '';
-      const key = 'hvt_region_migrated_' + tk.slice(-16);
-      if (!tk || localStorage.getItem(key)) return;
-      localStorage.setItem(key, '1');
+      // F220: api.js 只把令牌写在 sessionStorage，统一用 Api.token() 作为唯一来源，去掉恒空的 localStorage fallback。
+      tk = Api.token() || '';
+      if (!tk) return;
+      key = 'hvt_region_migrated_' + tk.slice(-16);
+      if (localStorage.getItem(key)) { regionMigrated = true; return; }
     } catch (e) { return; }
-    // 后台静默写回，不阻塞界面；失败也不影响显示（内存已补全）
+    migrationInFlight = true;
+    // 后台静默写回，不阻塞界面；失败也不影响显示（内存已补全），但要保留下次重试机会（F221）
     (async () => {
-      for (let i = 0; i < changed.length; i += 4) {
-        await Promise.allSettled(changed.slice(i, i + 4).map((p) => update(p.id, p)));
+      let failed = 0;
+      try {
+        for (let i = 0; i < changed.length; i += 4) {
+          const results = await Promise.allSettled(changed.slice(i, i + 4).map((p) => update(p.id, p)));
+          results.forEach((r) => { if (r.status === 'rejected') failed++; });
+        }
+      } finally {
+        migrationInFlight = false;
       }
+      if (failed) {
+        console.warn('[REGION] ' + failed + '/' + changed.length + ' 条老房源补省份写回失败，保留重试');
+        return; // 不写 per-session 标记、不置 regionMigrated，下次登录可重试（F221）
+      }
+      regionMigrated = true;
+      try { localStorage.setItem(key, '1'); } catch (e) { /* 隐私模式下不可写，忽略 */ }
       console.log('[REGION] 已为 ' + changed.length + ' 条老房源补上省份');
     })();
   }

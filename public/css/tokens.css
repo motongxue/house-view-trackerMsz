@@ -18,6 +18,9 @@
   --primary-05: #5d9cec;
   --primary-07: #53B2FA;
   --primary-08: #74CEFF;
+  --primary-09: #E8F0FF;         /* 主色最浅色调（蓝色标签底） */
+  --primary-bg: rgba(93, 156, 236, 0.10); /* 主色语义底色（选中/提示/信息态） */
+  --focus-ring: rgba(93, 156, 236, 0.35); /* 键盘焦点环颜色 */
 
   /* ---------- 2. 辅助色（4 系，含衍生） ---------- */
   /* 辅色-01 绿 */
@@ -46,6 +49,10 @@
   --warning: #FA8015;
   --link: #1A67F8;
   --error: #CD1801;
+  /* 语义底色：与上方功能色同源，避免业务层写死 rgba */
+  --success-bg: rgba(0, 179, 79, 0.10);
+  --warning-bg: rgba(250, 128, 21, 0.10);
+  --error-bg: rgba(205, 24, 1, 0.10);
 
   /* ---------- 4. 中性 / 文字 / 背景 / 边框 ---------- */
   --text-1: #222222;   /* 一级文字/标题 */
@@ -55,7 +62,12 @@
   --border-strong: #E6E6E6; /* 较深分隔线/按钮边框 */
   --border: #EFEFEF;   /* 常规分隔线/表格线 */
   --bg: #f0f1f4;       /* 页面背景 */
+  --bg-soft: rgba(127, 127, 127, 0.06); /* 弱化的柔和底色 */
   --white: #FFFFFF;
+  --panel-alt: #FAFAFA; /* 次面板底色（表头等） */
+  --panel-3: rgba(93, 156, 236, 0.14); /* 三级面板底色（进度条槽等） */
+  --table-head-bg: #FAFAFA; /* 表头底色 */
+  --table-hover-bg: rgba(93, 156, 236, 0.08); /* 表格行 hover 底色 */
 
   /* ---------- 5. 字体 ---------- */
   --font-sans: "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", "Alibaba Sans", Arial, Helvetica, sans-serif;
@@ -65,9 +77,10 @@
   --fw-semibold: 600;
 
   /* PC 字号阶梯（px） */
-  --fs-12: 12px; --fs-14: 14px; --fs-16: 16px; --fs-20: 20px;
-  --fs-24: 24px; --fs-26: 26px; --fs-28: 28px; --fs-30: 30px;
-  --fs-32: 32px; --fs-38: 38px; --fs-46: 46px; --fs-56: 56px; --fs-68: 68px;
+  --fs-12: 12px; --fs-13: 13px; --fs-14: 14px; --fs-15: 15px; --fs-16: 16px;
+  --fs-17: 17px; --fs-18: 18px; --fs-20: 20px; --fs-24: 24px; --fs-26: 26px;
+  --fs-28: 28px; --fs-30: 30px; --fs-32: 32px; --fs-38: 38px; --fs-40: 40px;
+  --fs-46: 46px; --fs-56: 56px; --fs-68: 68px;
   --lh-base: 22px;     /* PC 主字号14 对应行高 */
   --lh-ratio: 1.5;     /* 多行行高倍数 */
 
@@ -129,5 +142,7 @@
   /* ---------- 12. 图表色板 ---------- */
   --chart-1: #3670F7; --chart-2: #43BB67; --chart-3: #FAB728; --chart-4: #F78A4A;
   --chart-5: #F26363; --chart-6: #F552C2; --chart-7: #975FE4; --chart-8: #22D1D6;
-  --chart-ext: #AFBDFF #3BC58B #95E8C1 #F5E35F #FFD181 #F97178 #FFC4C6 #FFA7FF #FCBDFF #9DE6F8;
+  /* 扩展图表色板：拆为独立合法颜色令牌（原空格分隔列表不是合法颜色值） */
+  --chart-ext-1: #AFBDFF; --chart-ext-2: #3BC58B; --chart-ext-3: #95E8C1; --chart-ext-4: #F5E35F; --chart-ext-5: #FFD181;
+  --chart-ext-6: #F97178; --chart-ext-7: #FFC4C6; --chart-ext-8: #FFA7FF; --chart-ext-9: #FCBDFF; --chart-ext-10: #9DE6F8;
 }

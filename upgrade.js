@@ -19,10 +19,29 @@ const MAX_PKG = 400 * 1024 * 1024;   // 单包上限 400MB，防下到假包把�
 const DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
 const STALE_MS = 10 * 60 * 1000;     // 超过 10 分钟的非终态视为卡死，允许重来
 
+// 部署相关标识：硬编码值仅作默认，fork / 私有化部署请用配置或环境覆盖，
+// 否则会静默从上游仓库下载不属于本部署的升级包。
+function defaultReleaseBases() {
+  if (process.env.HVT_RELEASE_BASES) {
+    const arr = String(process.env.HVT_RELEASE_BASES).split(',').map((s) => s.trim()).filter(Boolean);
+    if (arr.length) return arr;
+  }
+  return [
+    'https://gitee.com/motongxue/house-view-trackerMsz/releases/download/',
+    'https://github.com/motongxue/house-view-trackerMsz/releases/download/'
+  ];
+}
+
 function cmpVersion(a, b) {
-  const pa = String(a || '').replace(/^v/i, '').split('.').map(Number);
-  const pb = String(b || '').replace(/^v/i, '').split('.').map(Number);
-  if (pa.some(isNaN) || pb.some(isNaN) || pa.length !== 3 || pb.length !== 3) {
+  // 允许 1~3 段（如 1.10 / v2），缺失段补 0 后逐段数值比较：
+  // 不能退回字典序，否则 '1.10' < '1.9'、'10.0.0' < '9.0.0'，多源竞速会选到旧快照。
+  const parse = (v) => {
+    const parts = String(v || '').trim().replace(/^v/i, '').split('.').map((x) => Number(x));
+    while (parts.length < 3) parts.push(0);
+    return parts.slice(0, 3);
+  };
+  const pa = parse(a), pb = parse(b);
+  if (pa.some(isNaN) || pb.some(isNaN)) {
     return String(a) === String(b) ? 0 : (String(a) > String(b) ? 1 : -1);
   }
   for (let i = 0; i < 3; i++) { if (pa[i] > pb[i]) return 1; if (pa[i] < pb[i]) return -1; }
@@ -127,8 +146,9 @@ async function fetchVersionRace(opt) {
   const allDone = new Promise((r) => { resolveAll = r; });
   const finish = () => { if (!closed) { closed = true; resolveAll(); } };
 
+  const pending = [];
   list.forEach((u) => {
-    attempt(u)
+    pending.push(attempt(u)
       .then((v) => {
         if (!closed) settled.push(v);
         if (!graceTimer) graceTimer = setTimeout(finish, GRACE_MS);
@@ -137,13 +157,18 @@ async function fetchVersionRace(opt) {
       .finally(() => {
         remaining -= 1;
         if (remaining === 0) finish();
-      });
+      }));
   });
 
-  await Promise.race([allDone, new Promise((r) => setTimeout(r, timeoutMs + 200))]);
+  // 保存外层超时句柄，避免 race 已经分出胜负后定时器仍挂在事件循环上；
+  // abortAll() 后等待所有尝试结算，否则被 abort 的请求会在函数返回后才把错误 push 进 errors。
+  let outerTimer = null;
+  await Promise.race([allDone, new Promise((r) => { outerTimer = setTimeout(r, timeoutMs + 200); })]);
   finish();
+  if (outerTimer) clearTimeout(outerTimer);
   if (graceTimer) clearTimeout(graceTimer);
   abortAll();
+  await Promise.allSettled(pending);
 
   if (settled.length) {
     win = settled.reduce((a, b) => (cmpVersion(b.data.version, a.data.version) > 0 ? b : a));
@@ -191,7 +216,7 @@ function createUpgrader(opt) {
   // appDir：安装根目录（server.js 所在目录）；dataDir：数据目录（状态/备份写这里，升级包不含它）
   const appDir = o.appDir || nodePath.join(__dirname);
   const dataDir = o.dataDir || nodePath.join(appDir, 'data');
-  const serviceName = o.serviceName || 'house-view-tracker';
+  const serviceName = o.serviceName || process.env.HVT_SERVICE_NAME || 'house-view-tracker';
   const statePath = path.join(dataDir, STATE_FILE);
   const backupRoot = path.join(dataDir, BACKUP_DIR);
   const versionCachePath = path.join(dataDir, 'version-cache.json');
@@ -231,10 +256,10 @@ function createUpgrader(opt) {
     const pkg = String((info && info.package) || '').trim();
     const tag = String((info && info.version) || '').trim();
     if (pkg && tag) {
-      for (const base of [
-        'https://gitee.com/motongxue/house-view-trackerMsz/releases/download/',
-        'https://github.com/motongxue/house-view-trackerMsz/releases/download/'
-      ]) {
+      const bases = (Array.isArray(o.releaseBases) && o.releaseBases.length)
+        ? o.releaseBases.map((b) => String(b || '').trim()).filter(Boolean)
+        : defaultReleaseBases();
+      for (const base of bases) {
         const u = base + tag + '/' + pkg;
         if (out.indexOf(u) < 0) out.push(u);
       }
@@ -242,19 +267,37 @@ function createUpgrader(opt) {
     return out;
   }
 
+  // SSRF：redirect:'follow' 会跟随 302 到 127.0.0.1 / 169.254.x.x 而绕过初始校验。
+  // 改为 manual 后逐跳重新 assertSafeUrl，并限制跳数；相对 Location 按当前 URL 解析。
+  const MAX_DOWNLOAD_REDIRECTS = 5;
+  async function fetchSafe(url, init) {
+    let cur = url;
+    for (let hop = 0; hop <= MAX_DOWNLOAD_REDIRECTS; hop++) {
+      await assertSafeUrl(cur);
+      const r = await fetcher(cur, Object.assign({}, init, { redirect: 'manual' }));
+      const loc = r.headers && r.headers.get && r.headers.get('location');
+      if (r.status >= 300 && r.status < 400 && loc) {
+        if (hop === MAX_DOWNLOAD_REDIRECTS) throw new Error('升级包下载重定向次数过多');
+        cur = new URL(loc, cur).toString();
+        continue;
+      }
+      return r;
+    }
+    throw new Error('升级包下载重定向次数过多');
+  }
+
   // 下载单个 URL：流式写临时文件，带大小/超时保护；成功后返回文件路径。
   async function downloadOne(url, tmp) {
-    await assertSafeUrl(url);
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), DOWNLOAD_TIMEOUT);
     try {
-      const r = await fetcher(url, { signal: ctl.signal, redirect: 'follow', cache: 'no-store' });
+      const r = await fetchSafe(url, { signal: ctl.signal, cache: 'no-store' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const total = Number(r.headers && r.headers.get && r.headers.get('content-length')) || 0;
       if (total > MAX_PKG) throw new Error('升级包过大（' + Math.round(total / 1048576) + 'MB）');
       if (!r.body || !r.body.getReader) throw new Error('响应没有可读流');
       const reader = r.body.getReader();
-      let got = 0, lastPct = -1;
+      let got = 0, lastPct = -1, lastWriteAt = 0;
       fs.writeFileSync(tmp, Buffer.alloc(0));
       const fd = fs.openSync(tmp, 'a');
       try {
@@ -265,22 +308,42 @@ function createUpgrader(opt) {
           if (got > MAX_PKG) throw new Error('升级包超过 ' + Math.round(MAX_PKG / 1048576) + 'MB 上限');
           fs.writeSync(fd, Buffer.from(value));
           const pct = total ? Math.min(95, Math.floor(got / total * 95)) : -1;
-          if (pct >= 0 && pct !== lastPct) { lastPct = pct; writeState({ phase: 'downloading', progress: pct, message: '正在下载升级包 ' + pct + '%' }); }
+          // 节流：writeState 是同步 read+mkdir+write+rename，不能每个 1% 都落盘阻塞事件循环。
+          // 至少间隔 500ms、或跨过 5% 台阶（以及 95% 收尾）才写一次。
+          const t = now();
+          if (pct >= 0 && pct !== lastPct && (t - lastWriteAt >= 500 || pct - lastPct >= 5 || pct === 95)) {
+            lastPct = pct; lastWriteAt = t;
+            writeState({ phase: 'downloading', progress: pct, message: '正在下载升级包 ' + pct + '%' });
+          }
         }
       } finally { fs.closeSync(fd); }
-      if (got < 1024 * 512) { try { fs.unlinkSync(tmp); } catch (_) {} throw new Error('下载内容过小（' + got + ' 字节），可能不是有效升级包'); }
+      if (got < 1024 * 512) throw new Error('下载内容过小（' + got + ' 字节），可能不是有效升级包');
       if (total && got < total * 0.9) throw new Error('下载不完整（' + got + '/' + total + '）');
       return got;
     } finally { clearTimeout(timer); }
   }
 
-  // 校验 tar：必须含 server.js 与 public/index.html，防止把错误页/木马包覆盖进去。
+  // 校验 tar：必须含 server.js 与 public/index.html，防止把错误页/木马包覆盖进去；
+  // 同时消毒条目名（拒绝 ../、绝对路径、符号链接），防止篡改包借解包越界写文件。
   async function verifyPkg(pkg) {
     if (process.platform === 'win32' && !o.cp) return true; // 本机回归用 mock cp
     const { stdout } = await new Promise((resolve, reject) => {
-      cp.execFile('tar', ['-tzf', pkg], { maxBuffer: 32 * 1024 * 1024 }, (e, out) => e ? reject(new Error('升级包不是有效 tar.gz：' + e.message)) : resolve({ stdout: out || '' }));
+      cp.execFile('tar', ['-tvzf', pkg], { maxBuffer: 32 * 1024 * 1024 }, (e, out) => e ? reject(new Error('升级包不是有效 tar.gz：' + e.message)) : resolve({ stdout: out || '' }));
     });
-    const has = (s) => stdout.split('\n').some((l) => /(^|\/)house-view-tracker\//.test(l) && l.replace(/\\/g, '/').endsWith(s));
+    const names = [];
+    for (const line of stdout.split('\n')) {
+      if (!line.trim()) continue;
+      // -tvzf 行首是类型字符，l + 9 位权限 = 符号链接（普通文件以 - 开头）
+      if (/^l[rwxstST-]{9}/.test(line)) throw new Error('升级包包含符号链接，已拒绝');
+      const mm = line.match(/\s\d{2}:\d{2}\s+(.+)$/); // verbose 输出「时:分」之后才是文件名
+      const name = (mm ? mm[1] : line).trim().replace(/\\/g, '/'); // mock cp 的纯名字列表同样兼容
+      if (!name) continue;
+      if (name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').indexOf('..') >= 0) {
+        throw new Error('升级包包含非法路径条目，已拒绝：' + name.slice(0, 200));
+      }
+      names.push(name);
+    }
+    const has = (s) => names.some((n) => /(^|\/)house-view-tracker\//.test(n) && n.endsWith(s));
     if (!has('server.js') || !has('public/index.html')) throw new Error('升级包内容不完整（缺少 server.js 或 public/index.html）');
   }
 
@@ -330,9 +393,10 @@ function createUpgrader(opt) {
     if (!list.length) throw new Error('版本文件没有配置升级包地址（downloadUrls / downloadUrl）');
     running = true;
     const target = String(info.version || '').trim();
+    let tmp = '';
     try {
-      writeState({ phase: 'downloading', ok: false, progress: 2, target, from: fromVersion, error: '', message: '准备下载升级包', backup: '' });
-      const tmp = path.join(dataDir, '.hvt-upgrade-' + target.replace(/[^0-9A-Za-z.-]/g, '_') + '.tar.gz');
+      writeState({ phase: 'downloading', ok: false, progress: 2, target, from: fromVersion, error: '', message: '准备下载升级包', backup: '', op: 'upgrade' });
+      tmp = path.join(dataDir, '.hvt-upgrade-' + target.replace(/[^0-9A-Za-z.-]/g, '_') + '.tar.gz');
       let lastErr = null, size = 0;
       for (const url of list) {
         try { size = await downloadOne(url, tmp); lastErr = null; break; }
@@ -345,20 +409,23 @@ function createUpgrader(opt) {
       const backupFile = await backup();
       try {
         writeState({ phase: 'extracting', progress: 98, message: '正在覆盖程序文件', backup: backupFile });
-        await run('tar', ['-xzf', tmp, '--strip-components=1', '-C', appDir]);
-        writeState({ phase: 'restarting', progress: 100, ok: true, message: '升级完成，服务正在重启，请稍后刷新页面' });
+        await run('tar', ['-xzf', tmp, '--strip-components=1', '--no-same-owner', '-C', appDir]);
+        writeState({ phase: 'restarting', progress: 100, ok: true, op: 'upgrade', message: '升级完成，服务正在重启，请稍后刷新页面' });
         scheduleRestart();
       } catch (e) {
         // 覆盖失败 → 立刻用备份还原
         try { await restore(backupFile); } catch (e2) { log('[upgrade] 自动回滚失败：' + e2.message); }
         throw new Error('覆盖失败已回滚：' + e.message);
       }
-      try { fs.unlinkSync(tmp); } catch (_) {}
       return { ok: true, target, size };
     } catch (e) {
       writeState({ phase: 'failed', ok: false, error: String(e.message || e), message: '升级失败：' + String(e.message || e) });
       throw e;
-    } finally { running = false; }
+    } finally {
+      // 统一清理临时包：校验失败、备份失败、全部源失败等路径都不能把 .hvt-upgrade-*.tar.gz 留在 data/
+      if (tmp) { try { fs.unlinkSync(tmp); } catch (_) {} }
+      running = false;
+    }
   }
 
   async function rollback() {
@@ -376,7 +443,7 @@ function createUpgrader(opt) {
     writeState({ phase: 'backingup', ok: false, message: '正在回滚到升级前版本' });
     try {
       await restore(backupFile);
-      writeState({ phase: 'restarting', ok: true, message: '回滚完成，服务正在重启' });
+      writeState({ phase: 'restarting', ok: true, op: 'rollback', message: '回滚完成，服务正在重启' });
       scheduleRestart();
       return { ok: true };
     } catch (e) {
@@ -385,10 +452,16 @@ function createUpgrader(opt) {
     }
   }
 
-  // 服务重启后调用：若上次停在 restarting，说明进程已起来 = 升级成功，补写 done。
+  // 服务重启后调用：若上次停在 restarting，说明进程已起来，补写 done。
+  // 必须按 op 区分 upgrade / rollback，否则回滚也会被前端当成「升级成功」。
   function onBoot() {
     const st = readState();
-    if (st.phase === 'restarting') writeState({ phase: 'done', ok: true, progress: 100, message: '升级完成（' + (st.target || '') + '）' });
+    if (st.phase === 'restarting') {
+      const message = st.op === 'rollback'
+        ? '回滚完成（已恢复到升级前版本）'
+        : '升级完成（' + (st.target || '') + '）';
+      writeState({ phase: 'done', ok: true, progress: 100, op: '', message });
+    }
   }
 
   return { readState, writeState, sources, cmpVersion, start, rollback, onBoot, statePath, backupRoot,

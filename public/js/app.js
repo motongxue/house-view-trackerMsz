@@ -192,19 +192,44 @@
     const body = list.map((p) => CSV_COLS.map((c) => escCsv(getPath(p, c[0]))).join(',')).join('\r\n');
     return '﻿' + head + '\r\n' + body;
   }
+  // 引号感知的 CSV 行解析：与 toCsv() 的 escCsv 对称，支持 "" 转义的双引号、
+  // 字段内逗号与换行，保证「导出再导入」不列错位、不损坏数据。
+  function parseCsvRows(text) {
+    const rows = [];
+    let row = [], field = '', quoted = false, inQuotes = false;
+    const pushField = () => { row.push({ text: field, quoted }); field = ''; quoted = false; };
+    const pushRow = () => { pushField(); rows.push(row); row = []; };
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += ch;
+      } else if (ch === '"') { inQuotes = true; quoted = true; }
+      else if (ch === ',') pushField();
+      else if (ch === '\r') { if (text[i + 1] === '\n') i++; pushRow(); }
+      else if (ch === '\n') pushRow();
+      else field += ch;
+    }
+    if (field !== '' || row.length || quoted) pushRow();
+    return rows.filter((r) => r.some((c) => c.text.trim() !== ''));
+  }
   function parseCsv(text) {
     text = text.replace(/^﻿/, '');
-    const arr = text.split(/\r?\n/).filter((l) => l.trim() !== '');
+    const arr = parseCsvRows(text);
     if (arr.length < 2) return [];
-    const header = arr[0].split(',').map((s) => s.trim());
+    const header = arr[0].map((c) => c.text.trim());
     const rows = [];
     for (let r = 1; r < arr.length; r++) {
-      const cells = arr[r].split(',');
+      const cells = arr[r];
       const o = { location: {}, attributes: {}, transaction: {}, facilities: {}, media: { images: [], videos: [] } };
       header.forEach((h, i) => {
         const col = CSV_COLS.find((c) => c[1] === h);
         if (col) {
-          const raw = (cells[i] || '').trim();
+          const cell = cells[i];
+          // 带引号的字段保持原样（含首尾空格），未加引号的字段沿用 trim 以兼容手写的 ", " 分隔
+          const raw = cell ? (cell.quoted ? cell.text : cell.text.trim()) : '';
           if (raw === '') return;
           // 经纬度按数值写入，CSV 只是文本容器；其余字段保持原样
           if (col[0] === 'geo.lng' || col[0] === 'geo.lat') {
@@ -740,7 +765,8 @@
       const price = num($('pm-price').value);
       if (price == null) { toast('请先填写购房价 / 实际成交价'); return; }
       const rv = $('pm-renovated').value;
-      const renovated = rv === 'yes' ? true : (rv === 'no' ? false : undefined);
+      // 未选择时显式置 null：undefined 会在 JSON 序列化时被丢弃，导致「清除已装修状态」不生效
+      const renovated = rv === 'yes' ? true : (rv === 'no' ? false : null);
       const ratio = parseFloat($('pm-down').value) || 0;
       const loanWan = price * (1 - ratio);
       const fundWan = Math.max(0, num($('pm-fund-amt').value) || 0);
@@ -778,6 +804,15 @@
   }
 
   // ---------- 用户展示（头像 + 昵称）----------
+  // u.avatar 可能来自用户资料/上传文件名，直接拼进 url(...) 时 ) 或引号可突破样式声明。
+  // 只放行 http(s)、站内相对路径与 data:image 预览，并用引号包裹 + 字符白名单双重约束。
+  function avatarUrlCss(v) {
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return 'none';
+    if (!/^(https?:\/\/|\/|\.\.?\/|data:image\/)/i.test(s)) return 'none';
+    if (!/^[a-zA-Z0-9:\/._?#=&%+~@,;!$-]+$/.test(s)) return 'none';
+    return 'url("' + s + '")';
+  }
   function initialOf(u) {
     const s = (u && (u.name || u.email)) || '我';
     return s.trim().charAt(0).toUpperCase();
@@ -786,7 +821,8 @@
     const u = state.user || {};
     const av = $('user-avatar');
     if (av) {
-      if (u.avatar) { av.style.backgroundImage = 'url(' + u.avatar + ')'; av.textContent = ''; }
+      const css = avatarUrlCss(u.avatar);
+      if (css !== 'none') { av.style.backgroundImage = css; av.textContent = ''; }
       else { av.style.backgroundImage = 'none'; av.textContent = initialOf(u); }
     }
     const nm = $('user-name'); if (nm) nm.textContent = u.name || u.email || '';
@@ -1041,7 +1077,7 @@
       f.src = fpAdvancedUrl();
     } else {
       f.title = '装修设计 · 3D 户型';
-      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.1';
+      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.2';
     }
     stage.appendChild(f);
   }
@@ -1221,7 +1257,7 @@
   // 高级设计器地址：设计器只读同源 localStorage['hvt-design-spec'] / ?spec=，
   // propId 仅作排障标记保留；需要（重新）生成方案时从设计器里 AI 面板的「上传户型图」入口进识别页。
   function fpAdvancedUrl() {
-    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.1';
+    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.2';
   }
 
   // 统一入口：离开本视图时 renderView 会调 destroyFloorplan()（同时清理同源同步监听）
@@ -1472,6 +1508,12 @@
     const f = state.filters;
     const matched = (p) => {
       const loc = p.location || {}, attr = p.attributes || {}, tran = p.transaction || {}, fac = p.facilities || {};
+      // num() 对缺失/非法值返回 null，而 null < 20 会被强制转成 true，
+      // 导致「未填价格/面积」的房源在设了最小值时被误过滤。比较前必须显式排除 null。
+      const numCmp = (a, b, less) => {
+        const na = num(a), nb = num(b);
+        return na != null && nb != null && (less ? na < nb : na > nb);
+      };
       if (f.q) { const q = f.q.toLowerCase(); const hay = [p.title, loc.community, loc.district, tran.houseNumber, tran.agentName, tran.agentPhone].join(' ').toLowerCase(); if (!hay.includes(q)) return false; }
       if (f.city && (loc.city || '') !== f.city) return false;
       if (f.district && (loc.district || '') !== f.district) return false;
@@ -1480,17 +1522,17 @@
       if (f.orientation && (attr.orientation || '') !== f.orientation) return false;
       if (f.floor && (attr.floor || '') !== f.floor) return false;
       if (f.status && (tran.status || '在售') !== f.status) return false;
-      if (f.totalMin !== '' && num(tran.totalPrice) < num(f.totalMin)) return false;
-      if (f.totalMax !== '' && num(tran.totalPrice) > num(f.totalMax)) return false;
-      if (f.areaMin !== '' && num(attr.area) < num(f.areaMin)) return false;
-      if (f.areaMax !== '' && num(attr.area) > num(f.areaMax)) return false;
+      if (f.totalMin !== '' && numCmp(tran.totalPrice, f.totalMin, true)) return false;
+      if (f.totalMax !== '' && numCmp(tran.totalPrice, f.totalMax, false)) return false;
+      if (f.areaMin !== '' && numCmp(attr.area, f.areaMin, true)) return false;
+      if (f.areaMax !== '' && numCmp(attr.area, f.areaMax, false)) return false;
       if (f.decoration && (attr.decoration || '') !== f.decoration) return false;
-      if (f.subwayMax !== '' && num(loc.subwayDistance) > num(f.subwayMax)) return false;
+      if (f.subwayMax !== '' && numCmp(loc.subwayDistance, f.subwayMax, false)) return false;
       if (f.viewingFrom && (tran.viewingDate || '') < f.viewingFrom) return false;
       if (f.viewingTo && (tran.viewingDate || '') > f.viewingTo) return false;
       if (f.withTransport && !fac.transport) return false;
       if (f.withSchool && !fac.school) return false;
-      if (f.scoreMin !== '' && computeScore(p) < num(f.scoreMin)) return false;
+      if (f.scoreMin !== '' && numCmp(computeScore(p), f.scoreMin, true)) return false;
       if (f.favOnly && !p.favorite) return false;
       return true;
     };
@@ -1867,15 +1909,21 @@
     const status = s.trim();
     if (!STATUS_OPTS.includes(status)) { toast('状态只能是 ' + STATUS_OPTS.join('/')); return; }
     try {
-      for (const id of Array.from(state.batchSel)) {
-        const p = state.properties.find((x) => x.id === id); if (!p) continue;
+      const jobs = Array.from(state.batchSel).map((id) => {
+        const p = state.properties.find((x) => x.id === id);
+        if (!p) return null;
         const row = Object.assign({}, p);
         row.transaction = Object.assign({}, p.transaction, { status });
-        await Store.update(id, row);
-      }
+        return { id, row };
+      }).filter(Boolean);
+      // 并发提交并统计成败：单项失败不再中断整批，也不再只显示笼统的「失败」
+      const results = await Promise.allSettled(jobs.map((x) => Store.update(x.id, x.row)));
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - ok;
       state.batchSel.clear();
       const fresh = await Store.list(); state.properties = fresh;
-      toast('已更新 ' + state.batchSel.size + ' 套状态为 ' + status, true); renderListInner(c, fresh);
+      toast('已更新 ' + ok + ' 套状态为 ' + status + (failed ? '，失败 ' + failed + ' 套' : ''), true);
+      renderListInner(c, fresh);
     } catch (e) { toast('更新失败：' + e.message); }
   }
 
@@ -2836,15 +2884,20 @@
   async function handleKbFiles(fileList, c) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    for (const f of files) {
-      if (f.size > 30 * 1024 * 1024) { toast('「' + f.name + '」超过 30MB，已跳过'); continue; }
+    // 后端 /api/knowledge 用 readBody（约 1e6 字符上限）接收 base64 dataUrl，
+    // 原始文件超过约 700KB 就会被断连；这里按真实上限提前拦截并明确提示，
+    // 不再让用户等到 ECONNRESET 才知道失败。（后端仅接受 dataUrl，纯前端无法改走二进制流）
+    const MAX = 700 * 1024;
+    const tasks = files.map(async (f) => {
+      if (f.size > MAX) { toast('「' + f.name + '」超过 700KB（服务端单次请求限制），已跳过'); return; }
       try {
         const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); });
         const title = f.name.replace(/\.[^.]+$/, '');
         await Store.knowledgeUpload(dataUrl, f.name, title);
         toast('已上传：' + f.name, true);
       } catch (e) { toast('上传失败：' + f.name + ' ' + e.message); }
-    }
+    });
+    await Promise.all(tasks); // 并发处理多文件，不再串行逐个 await
     renderKnowledge(c);
   }
 
@@ -3128,12 +3181,17 @@
       let idx = 0;
       for (const p of targets) {
         const rr = await new Promise((resolve) => {
+          let settled = false;
+          const finish = (v) => { if (settled) return; settled = true; clearTimeout(timer); resolve(v); };
+          // 高德 SDK 既不回调也不抛错时，await 会永远挂起 → finally 不执行、按钮卡在「计算中」。
+          // 加超时兜底：超时按「路线未找到」标记该项，让循环与 finally 都能正常收敛。
+          const timer = setTimeout(() => finish({ distance: null, duration: null, path: [] }), 10000);
           driving.search([p.geo.lng, p.geo.lat], [dest.lng, dest.lat], (status, r) => {
             if (status === 'complete' && r.routes && r.routes[0]) {
               const route = r.routes[0];
               const path = []; (route.steps || []).forEach((s) => { (s.path || []).forEach((pt) => path.push([pt.lng, pt.lat])); });
-              resolve({ distance: route.distance, duration: route.time, path });
-            } else resolve({ distance: null, duration: null, path: [] });
+              finish({ distance: route.distance, duration: route.time, path });
+            } else finish({ distance: null, duration: null, path: [] });
           });
         });
         results.push({ p, distance: rr.distance, duration: rr.duration });
@@ -3756,6 +3814,7 @@
     // ===== AI 智能录入（文本 / 截图 / 链接 → 大模型抽取字段）=====
     (function bindAIExtract() {
       let aieImages = [];
+      let aieFilesLoading = Promise.resolve(); // 截图 FileReader 异步回填，识别前必须等它完成
       const aieModal = $('aie-modal');
       window.__aieFields = null;
       $('ai-extract-btn').onclick = () => {
@@ -3767,6 +3826,7 @@
         $('aie-status').textContent = '';
         $('aie-warn').innerHTML = '';
         aieImages = [];
+        aieFilesLoading = Promise.resolve();
         aieModal.classList.remove('hidden');
       };
       $('aie-x').onclick = () => aieModal.classList.add('hidden');
@@ -3775,8 +3835,7 @@
         const files = Array.from(e.target.files || []);
         aieImages = [];
         $('aie-previews').innerHTML = '';
-        files.forEach((f) => {
-          if (!f.type || !f.type.startsWith('image/')) return;
+        const reads = files.filter((f) => f.type && f.type.startsWith('image/')).map((f) => new Promise((resolve) => {
           const reader = new FileReader();
           reader.onload = () => {
             aieImages.push(reader.result);
@@ -3784,11 +3843,15 @@
             img.src = reader.result;
             img.className = 'aie-thumb';
             $('aie-previews').appendChild(img);
+            resolve();
           };
+          reader.onerror = () => resolve();
           reader.readAsDataURL(f);
-        });
+        }));
+        aieFilesLoading = Promise.all(reads); // 等全部读取完成，避免点识别时图片还没进数组
       };
       $('aie-run').onclick = async () => {
+        await aieFilesLoading;
         const text = $('aie-text').value.trim();
         const url = $('aie-url').value.trim();
         if (!text && !url && !aieImages.length) { toast('请至少提供文字、链接或截图'); return; }
@@ -4271,7 +4334,7 @@
               <h3>位置</h3>
               <button class="btn sm" data-surround type="button">📍 查看周边配套</button>
             </div>
-            ${p.geo && p.geo.lng && p.geo.lat ? kv('坐标', fmtCoord(p.geo.lng) + ', ' + fmtCoord(p.geo.lat) + '（' + esc(p.geo.source || '') + '）') : '<div class="muted">未定位</div>'}
+            ${p.geo && p.geo.lng && p.geo.lat ? kv('坐标', fmtCoord(p.geo.lng) + ', ' + fmtCoord(p.geo.lat) + '（' + (p.geo.source || '') + '）') : '<div class="muted">未定位</div>'}
             <div id="detail-map" class="amap-mini" style="height:260px;margin-top:10px"></div>
           </div>
           <div class="detail-box" style="margin-bottom:16px">
@@ -4448,14 +4511,15 @@
       // 校正浏览器取整误差：只比「右列高度 - 左列高度」。
       // 坑：不能用 right.bottom - leftBottom —— 压缩右列会让浏览器调整滚动位置（scroll anchoring），
       // 开头缓存的 leftBottom 与后续 right.bottom 不在同一坐标系，会凭空多出几百像素触发误兜底。
-      let over = Math.round(right.getBoundingClientRect().height - cap);
+      // cap 以 grid top 为原点，right 高度需扣掉其自身 top offset，坐标系才一致
+      let over = Math.round(right.getBoundingClientRect().height - (cap - offset));
       if (over > 0) {
         const bySize = lists.map((l, i) => i).filter((i) => lists[i].classList.contains('capped'))
           .sort((a, b) => naturals[b] - naturals[a]);
         for (const i of bySize) {
           const cur = parseFloat(lists[i].style.maxHeight) || 0;
           lists[i].style.maxHeight = Math.round(Math.max(MIN, cur - over)) + 'px';
-          over = Math.round(right.getBoundingClientRect().height - cap);
+          over = Math.round(right.getBoundingClientRect().height - (cap - offset));
           if (over <= 0) break;
         }
       }
@@ -4644,7 +4708,9 @@
       formWrap.classList.remove('hidden');
       const g = (id) => formWrap.querySelector('#' + id);
       g('cd-form-cancel').onclick = () => { formWrap.classList.add('hidden'); state_cd.editing = null; };
-      g('cd-form-save').onclick = async () => {
+      const saveBtn = g('cd-form-save');
+      saveBtn.onclick = async () => {
+        if (saveBtn.disabled) return; // 防止 async 提交期间连点重复创建成交记录
         const payload = {
           community: g('cd-f-community').value.trim(),
           city: g('cd-f-city').value.trim(),
@@ -4660,6 +4726,7 @@
           agent: g('cd-f-agent').value.trim()
         };
         if (!payload.community) { toast('请填小区名称'); return; }
+        saveBtn.disabled = true;
         try {
           let saved;
           if (state_cd.editing) {
@@ -4675,6 +4742,7 @@
           state_cd.editing = null;
           renderTable(); toast('已保存');
         } catch (e) { toast('保存失败：' + e.message); }
+        finally { saveBtn.disabled = false; }
       };
       if (window.innerWidth > 720) setTimeout(() => { const el = g('cd-f-layout'); if (el) el.focus(); }, 40);
     };
@@ -4839,7 +4907,10 @@
     $('d-purchase').onclick = () => openPurchaseModal(p, () => renderDetail(c, id));
     $('d-deals').onclick = () => openCommunityDealsModal(p);
     $('d-edit').onclick = () => renderForm(c, id);
-    $('d-del').onclick = async () => { await doDelete(id); setView(backView); };
+    $('d-del').onclick = async () => {
+      try { await doDelete(id); setView(backView); }
+      catch (e) { toast('删除失败：' + (e && e.message || e)); } // 失败时保持当前视图并提示，不留旧状态
+    };
     $('d-fav').onclick = async () => {
       try {
         const row = await Store.toggleFavorite(id, !p.favorite);
@@ -4890,18 +4961,21 @@
     try { renderFuList(await Store.listFollowups(id)); } catch (e) { fuList.innerHTML = '<div class="muted">跟进日志加载失败：' + esc(e.message) + '</div>'; }
     const fuAdd = $('fu-add');
     if (fuAdd) fuAdd.onclick = async () => {
+      if (fuAdd.disabled) return; // 提交期间禁用，防止连点重复添加
       const content = ($('fu-content').value || '').trim();
       if (!content) { toast('请先填写跟进内容'); return; }
+      fuAdd.disabled = true;
       try {
         await Store.addFollowup(id, { type: $('fu-type').value, happenedDate: $('fu-date').value || null, content });
         $('fu-content').value = '';
-        toast('已添加跟进', true);
         const items = await Store.listFollowups(id);
         renderFuList(items);
         const body = drawer.querySelector('.fu-drawer-body');
         const listEl = $('fu-list');
         if (body && listEl) body.scrollTop = Math.max(0, listEl.offsetTop - 12);
+        toast('已添加跟进', true); // 列表刷新成功后再提示，避免刷新失败却显示成功
       } catch (e) { toast('添加失败：' + e.message); }
+      finally { fuAdd.disabled = false; }
     };
   }
 
@@ -5335,8 +5409,12 @@
         info = await fetchVersionJSON();
         latest = String(info.version || '').trim();
         if (!latest) throw new Error('版本文件缺少 version 字段');
-        if (cmpVersion(latest, curTag) <= 0) {
-          box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curTag) + '）</span>';
+        // 页头 #pv-ver 已由 applyLocalVersion() 渲染为服务器真实版本；curTag 只是 app.js?v= 的日期戳，
+        // 直接比较会把「已是最新」误判成「有新版本」。优先用真实版本，缺失时才退回 curTag。
+        const pvEl = $('pv-ver');
+        const curFallback = String((pvEl && pvEl.textContent) || '').trim() || curTag;
+        if (cmpVersion(latest, curFallback) <= 0) {
+          box.innerHTML = '<span class="pv-up-ok">✓ 当前已是最新版本（' + esc(curFallback) + '）</span>';
           return;
         }
       } catch (e2) {
@@ -5524,6 +5602,7 @@
     document.body.classList.add('modal-open');
   }
   function closeSettingsModal() {
+    stopUpgradePoll(); // 关闭弹窗即停止轮询，避免继续写入已脱离 DOM 的 box（请求/内存泄漏）
     const overlay = $('settings-modal-overlay');
     if (overlay) overlay.classList.remove('open');
     document.body.classList.remove('modal-open');
@@ -6068,13 +6147,20 @@
             const bEl = $('aip-ve-base');
             const kEl = $('aip-ve-key');
             const cell = rowEl ? rowEl.querySelector('[data-test-for="' + mid + '"]') : null;
+            // await 期间其他操作可能重绘模型列表，闭包捕获的 cell 会脱离 DOM；
+            // 写结果前按 mid 重新查询当前可见行，避免检测成功却看不到。
+            const findCell = () => {
+              const r = Array.from(document.querySelectorAll('#aip-ve-models .aip-ve-row')).find((x) => x.dataset.mid === mid);
+              return r ? r.querySelector('[data-test-for="' + mid + '"]') : null;
+            };
             const paint = (res) => {
               aiVendorEditor._tests = aiVendorEditor._tests || {};
               aiVendorEditor._tests[mid] = res;
-              if (cell) {
-                cell.className = 'aip-cell-test ' + (res.ok ? 'ok' : 'err');
-                cell.textContent = res.text;
-                cell.title = res.title || res.text;
+              const liveCell = findCell();
+              if (liveCell) {
+                liveCell.className = 'aip-cell-test ' + (res.ok ? 'ok' : 'err');
+                liveCell.textContent = res.text;
+                liveCell.title = res.title || res.text;
               }
             };
             // 没填过 Key 就别发请求：直接说清楚，免得白等一轮还抛个 400
@@ -6349,7 +6435,8 @@
 
     const av = $('pf-avatar');
     function paintAv() {
-      if (u.avatar) { av.style.backgroundImage = 'url(' + u.avatar + ')'; av.textContent = ''; }
+      const css = avatarUrlCss(u.avatar);
+      if (css !== 'none') { av.style.backgroundImage = css; av.textContent = ''; }
       else { av.style.backgroundImage = 'none'; av.textContent = initialOf(u); }
     }
     paintAv();
@@ -6394,6 +6481,8 @@
 
     const save = $('pf-save');
     if (save) save.onclick = async () => {
+      if (save.disabled) return; // 提交期间禁用，防止双击触发两次头像上传 / PATCH
+      save.disabled = true;
       const name = $('pf-name').value.trim();
       const msg = $('pf-msg');
       msg.style.color = 'var(--danger)'; msg.textContent = '';
@@ -6451,6 +6540,7 @@
         msg.textContent = keyChanged ? '已保存 · 请刷新页面使新高德 Key 生效' : '已保存';
         toast(keyChanged ? '设置已保存，刷新页面后新 Key 生效' : '设置已保存', true);
       } catch (err) { msg.textContent = err.message; }
+      finally { save.disabled = false; } // 成功/校验失败/异常都复位，避免按钮永久禁用
     };
   }
 
@@ -7021,7 +7111,9 @@
       let deadline = '<div class="muted">未设置最晚购房时间，可在「设置 → 购房需求」里开启。</div>';
       if (dd.deadlineEnabled && dashDate(dd.deadlineDate)) {
         const days = Math.ceil((new Date(dd.deadlineDate + 'T00:00:00') - new Date()) / 86400000);
-        deadline = `<div class="plan-deadline ${days < 0 ? 'over' : ''}">⏰ ${days < 0 ? '已超期 ' + Math.abs(days) + ' 天' : '距最晚购房时间 ' + days + ' 天'}（${esc(dd.deadlineDate)}）</div>`;
+        // dashDate 只校验 yyyy-mm-dd 形状，2024-13-45 之类非法日期会得到 Invalid Date → NaN，
+        // 必须兜底，否则会渲染「已超期 NaN 天」（与 paintDeadline 口径一致）。
+        if (!isNaN(days)) deadline = `<div class="plan-deadline ${days < 0 ? 'over' : ''}">⏰ ${days < 0 ? '已超期 ' + Math.abs(days) + ' 天' : '距最晚购房时间 ' + days + ' 天'}（${esc(dd.deadlineDate)}）</div>`;
       }
       // 第三栏：用已有数据填满顶部卡片右侧空白（不新增业务字段）
       const statusRows = PLAN_STATUS.map((s) => {

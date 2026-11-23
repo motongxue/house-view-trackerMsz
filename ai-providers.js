@@ -40,17 +40,33 @@ function normType(v) {
   return MODEL_TYPES.indexOf(t) >= 0 ? t : DEFAULT_TYPE;
 }
 
+// 缺 id 时按「模型内容」生成稳定标识（FNV-1a），而不是按数组下标：
+// 下标 id 在删除/重排后会指向另一条模型，导致已保存的 activeKey 失效或错位。
+function stableModelId(m, i) {
+  const basis = s(m.model, 120) + '|' + s(m.name, 80);
+  if (!s(m.model, 120) && !s(m.name, 80)) return 'm' + (i + 1);
+  let h = 2166136261;
+  for (let k = 0; k < basis.length; k++) { h ^= basis.charCodeAt(k); h = Math.imul(h, 16777619); }
+  return 'm' + (h >>> 0).toString(36);
+}
+
 // 惰性兼容：上一版记录只有单个 model 字段、没有 models 数组。
 // 这里统一补成一行，旧账号不需要数据库迁移。
 function modelList(p) {
   const arr = asList(p && p.models);
   if (arr.length) {
-    return arr.filter(m => m && typeof m === 'object').map((m, i) => ({
-      id: s(m.id, 60) || ('m' + (i + 1)),
-      name: s(m.name, 80) || s(m.model, 120) || ('模型' + (i + 1)),
-      model: s(m.model, 120),
-      type: normType(m.type)
-    }));
+    const seen = new Set();
+    return arr.filter(m => m && typeof m === 'object').map((m, i) => {
+      let id = s(m.id, 60) || stableModelId(m, i);
+      if (seen.has(id)) id = id + '-' + i; // 与 normModels 一致：重复 id 追加序号，避免 activeKey 指向歧义模型
+      seen.add(id);
+      return {
+        id,
+        name: s(m.name, 80) || s(m.model, 120) || ('模型' + (i + 1)),
+        model: s(m.model, 120),
+        type: normType(m.type)
+      };
+    });
   }
   const legacy = s(p && p.model, 120);
   return legacy ? [{ id: 'm1', name: legacy, model: legacy, type: DEFAULT_TYPE }] : [];
@@ -84,12 +100,16 @@ function parseActive(key) {
 
 function normModels(raw, prev) {
   if (!Array.isArray(raw)) return modelList(prev);
-  if (raw.length > MAX_MODELS_PER_PROVIDER) {
+  // 先过滤掉非对象项再计数：否则 20 个合法模型 + 1 条垃圾会被误报超限，
+  // 而垃圾项还会参与 id 序号计算。raw 有内容但全部非法时直接报错，不静默存空清单。
+  const accepted = raw.filter(m => m && typeof m === 'object');
+  if (raw.length && !accepted.length) throw new Error('没有有效的模型数据');
+  if (accepted.length > MAX_MODELS_PER_PROVIDER) {
     throw new Error('单个服务商下最多 ' + MAX_MODELS_PER_PROVIDER + ' 个模型');
   }
   const seen = new Set();
-  return raw.filter(m => m && typeof m === 'object').map((m, i) => {
-    let id = s(m.id, 60) || ('m' + (i + 1));
+  return accepted.map((m, i) => {
+    let id = s(m.id, 60) || stableModelId(m, i);
     if (seen.has(id)) id = id + '-' + i;
     seen.add(id);
     const model = s(m.model, 120);
@@ -103,6 +123,7 @@ function normModels(raw, prev) {
 }
 
 // 保存入口：incoming 是前端提交的完整清单；oldList 是库里已有清单。
+// 语义是 full-replace：incoming 中未出现的旧服务商会被移除；这是前端「整表提交」的既有约定。
 // 只保留白名单字段，绝不把前端传来的其它键写进数据库。
 function mergeProviders(oldList, incoming) {
   const old = asList(oldList);
@@ -133,6 +154,8 @@ function mergeProviders(oldList, incoming) {
       model: models.length ? models[0].model : '' // 兼容快照：回退到旧前端时仍能显示
     });
   }
+  // 提交了内容却一条都没通过校验（全无效/重复 id）时拒绝保存，避免 COALESCE 把用户清单静默清空
+  if (src.length && !out.length) throw new Error('没有有效的服务商数据，未修改原有清单');
   return out;
 }
 
@@ -155,10 +178,11 @@ function pickActive(list, activeKey, enabled, legacyRow) {
   if (!enabled) return { ok: true, provider: null, channel: 'gateway' };
   const { providerId, modelId } = parseActive(activeKey);
   let p = arr.find(x => x && s(x.id, 60) === providerId);
+  let fromLegacy = false;
   if (!p) {
     // 迁移未跑到 / 旧数据兜底：旧四列仍可用，保证老账号不突然失效
     const old = legacyProvider(legacyRow);
-    if (old) p = old;
+    if (old) { p = old; fromLegacy = true; }
   }
   if (!p) return { ok: false, provider: null, missing: ['还没有选择「当前使用」的模型'] };
   const models = modelList(p);
@@ -174,7 +198,9 @@ function pickActive(list, activeKey, enabled, legacyRow) {
     ok: true,
     provider: {
       id: s(p.id, 60), name: s(p.name, 60),
-      activeKey: activeKeyOf(p.id, m.id),
+      // legacy 兜底不签发 'legacy::m1' 这类合成模型键（迁移完成后会失效）；
+      // 只用固定的 'legacy' 厂商键，解析时自动取第一行，稳定且不会指向歧义模型。
+      activeKey: fromLegacy ? s(p.id, 60) : activeKeyOf(p.id, m.id),
       baseUrl, model, apiKey,
       modelName: s(m.name, 80) || model, modelType: m.type,
       providerId: s(p.id, 60), modelId: m.id

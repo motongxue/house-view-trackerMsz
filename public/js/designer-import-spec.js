@@ -122,16 +122,30 @@
       var inp = document.createElement('input');
       inp.type = 'file'; inp.accept = '.json,.html,.zip,application/json,text/html,application/zip';
       inp.style.display = 'none'; document.body.appendChild(inp);
-      inp.onchange = function () {
+      // F043: 用户取消选择时 onchange 不触发，input 会残留。统一用幂等 cleanup，
+      // 由 change / window focus / 兜底 timeout 三条路径清理，避免重复 DOM 泄漏。
+      var done = false;
+      var timer = null;
+      var cleanup = function () {
+        if (done) return;
+        done = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        window.removeEventListener('focus', onFocus);
+        try { if (inp.parentNode) inp.parentNode.removeChild(inp); } catch (e) {}
+      };
+      var onFocus = function () { setTimeout(cleanup, 500); };
+      inp.addEventListener('change', function () {
         var f = inp.files && inp.files[0];
-        try { document.body.removeChild(inp); } catch (e) {}
+        cleanup();
         if (!f) return;
         var lower = f.name.toLowerCase();
         if (lower.endsWith('.zip')) { readZipFile(f, ta); return; }
         var rd = new FileReader();
         rd.onload = function () { try { ta.value = rd.result; } catch (e) {} };
         rd.readAsText(f);
-      };
+      });
+      window.addEventListener('focus', onFocus);
+      timer = setTimeout(cleanup, 60000); // 兜底：极端情况下计划任务未触发也不残留
       inp.click();
     });
   }
@@ -153,8 +167,13 @@
           return !zip.files[n].dir && n.toLowerCase().endsWith('.json');
         });
         if (!names.length) { fail('压缩包里没找到 .json 方案文件'); return; }
-        // 优先 spec.json，其次任何顶层/子目录里的 *.json
-        var target = names.filter(function (n) { return n.toLowerCase().split('/').pop() === 'spec.json'; })[0] || names[0];
+        // F169: 必须有 spec.json，否则中止并提示实际找到的文件，避免误把 meta.json/package.json 当方案导入
+        var specNames = names.filter(function (n) { return n.toLowerCase().split('/').pop() === 'spec.json'; });
+        if (!specNames.length) {
+          fail('压缩包里没有 spec.json，找到的 json 文件：' + names.join('、') + '。请用含 spec.json 的标准方案包。');
+          return;
+        }
+        var target = specNames[0];
         zip.files[target].async('string').then(function (txt) {
           ta.value = txt;
           loading.textContent = '已从压缩包提取 ' + target + '（' + names.length + ' 个 json 中选用），点击「导入并载入」继续。其余文件未保存。';
@@ -183,20 +202,48 @@
     return null;
   }
 
+  // F170: 从任意起点按花括号配对（跳过字符串/转义）提取完整顶层对象。
+  // 相比「非贪婪正则 + lastIndexOf('}')」的截断兜底，括号平衡能正确处理嵌套 preset。
+  function braceSlice(raw) {
+    var start = raw.indexOf('{');
+    if (start < 0) return null;
+    var depth = 0, inStr = false, esc = false;
+    for (var i = start; i < raw.length; i++) {
+      var ch = raw.charAt(i);
+      if (inStr) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return raw.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
+
   // 提取技能 HTML 内联的方案数据；优先带 id="__preset" 的 script 块（build.py 注入位置），兜底任意写法。
   function extractPreset(html) {
     var m = html.match(/<script[^>]*\bid="__preset"[^>]*>\s*window\.__PRESET__\s*=\s*([\s\S]*?)<\/script>/i);
     if (!m) m = html.match(/window\.__PRESET__\s*=\s*([\s\S]*?)<\/script>/i);
-    if (!m) m = html.match(/window\.__PRESET__\s*=\s*(\{[\s\S]*?\})\s*;?\s*(?:<\/script>|$)/i);
+    if (!m) m = html.match(/window\.__PRESET__\s*=\s*([\s\S]*?);?\s*(?:<\/script>|$)/i);
     if (!m) return null;
     var raw = m[1];
-    try { return JSON.parse(raw); }
-    catch (e) {
-      // 兜底截断到最后一个 }（应对非贪婪截到内嵌 } 的情况）
-      var last = raw.lastIndexOf('}');
-      if (last > 0) { try { return JSON.parse(raw.slice(0, last + 1)); } catch (e2) {} }
-      return null;
+    // 先整体解析；失败则用括号平衡提取第一个完整对象再解析，并校验结果为非 null 对象
+    var candidates = [raw];
+    var balanced = braceSlice(raw);
+    if (balanced && balanced !== raw) candidates.push(balanced);
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var obj = JSON.parse(candidates[i]);
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj;
+      } catch (e) { /* 试下一个候选 */ }
     }
+    return null;
   }
 
   function doImport() {
@@ -221,13 +268,21 @@
     var preset = { spec: spec, id: obj.id || ('import-' + Date.now().toString(36)) };
     if (obj.underlay && typeof obj.underlay === 'object') preset.underlay = obj.underlay;
     if (obj.underlays && Array.isArray(obj.underlays)) preset.underlays = obj.underlays;
+    // F258: 先序列化并写入新键成功，再删旧存档。
+    // 原顺序是先 removeItem 再 setItem，若 setItem 因配额/隐私模式抛错，
+    // 用户旧存档已被清空且只显示错误，造成不可恢复的存档丢失。
+    var payload;
+    try { payload = JSON.stringify(preset); }
+    catch (e) { fail('方案序列化失败：' + e.message); return; }
     try {
-      // 清掉旧存档：设计器优先读 house-designer-v2-*，留着会盖住新方案
+      localStorage.setItem('hvt-design-spec', payload);
+    } catch (e) { fail('存不进浏览器存储：' + e.message); return; }
+    // 新键已落盘后再清旧存档；清理失败不影响已保存的新方案
+    try {
       Object.keys(localStorage).forEach(function (k) {
         if (k.indexOf('house-designer-v2') === 0) localStorage.removeItem(k);
       });
-      localStorage.setItem('hvt-design-spec', JSON.stringify(preset));
-    } catch (e) { fail('存不进浏览器存储：' + e.message); return; }
+    } catch (e) { /* 旧键清理失败可忽略，新方案已保存 */ }
     body.innerHTML = '<div class="dai-loading">已导入，正在载入设计器…</div>';
     setTimeout(function () { location.reload(); }, 400);
   }

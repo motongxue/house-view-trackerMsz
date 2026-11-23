@@ -18,15 +18,49 @@
     if (!fs.existsSync(envPath)) return;
     const text = fs.readFileSync(envPath, 'utf8');
     for (const line of text.split(/\r?\n/)) {
-      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
       if (!m) continue;
       const k = m[1];
       let v = m[2];
-      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+      const q = v.charAt(0);
+      if (q === '"' || q === "'") {
+        const end = v.indexOf(q, 1);
+        if (end >= 0) {
+          let inner = v.slice(1, end);
+          // 双引号内解码常见转义（\n \r \t \" \\），单引号保持字面量；逐个处理避免 \\n 被误判
+          if (q === '"') inner = inner.replace(/\\([nrt"\\])/g, (_, c) => ({ n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' }[c]));
+          v = inner;
+        } else {
+          v = v.replace(/\s+#.*$/, '').trim(); // 未闭合引号：仍剥掉行内注释
+        }
+      } else {
+        // 未加引号时，仅把「空白 + #」之后的内容当作行内注释；p@ss#word 中的 # 原样保留
+        v = v.replace(/\s+#.*$/, '').trim();
+      }
       if (process.env[k] === undefined) process.env[k] = v;
     }
   } catch (_) {}
 })();
+
+// 布尔/端口环境变量归一化：避免 'FALSE'/'0'/'no' 被误判为 true，以及畸形端口静默变成 NaN。
+function envBool(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return def;
+  const s = String(raw).trim().toLowerCase();
+  if (/^(1|true|yes|on)$/.test(s)) return true;
+  if (/^(0|false|no|off)$/.test(s)) return false;
+  return def;
+}
+function envPort(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return def;
+  const s = String(raw).trim();
+  const n = Number(s);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error('配置项 ' + name + ' 不是有效端口（1-65535）：' + JSON.stringify(raw));
+  }
+  return n;
+}
 
 // 令牌签名密钥：优先环境变量 TOKEN_SECRET（部署时务必设置）；缺失时随机生成并持久化到
 // 项目根目录 .token-secret 文件（权限 0600），重启后不丢失。彻底去掉写死的共享默认值，
@@ -45,8 +79,14 @@ function resolveTokenSecret() {
       if (s && s.length >= 16) return s;
     }
     const generated = crypto.randomBytes(32).toString('hex');
-    try { fs.writeFileSync(secretFile, generated, { mode: 0o600 }); } catch (_) {}
-    console.warn('[SECURITY] 未设置 TOKEN_SECRET，已生成随机签名密钥并保存到 .token-secret（请备份该文件；删除它会令所有用户重新登录）。');
+    let saveErr = null;
+    try { fs.writeFileSync(secretFile, generated, { mode: 0o600 }); } catch (e) { saveErr = e; }
+    if (!saveErr) {
+      console.warn('[SECURITY] 未设置 TOKEN_SECRET，已生成随机签名密钥并保存到 .token-secret（请备份该文件；删除它会令所有用户重新登录）。');
+    } else {
+      console.error('[SECURITY] 未设置 TOKEN_SECRET 且无法写入 .token-secret（' + saveErr.message +
+        '）：本次生成的密钥仅存于内存，重启后所有用户将被登出。请显式设置环境变量 TOKEN_SECRET 以保证稳定。');
+    }
     return generated;
   } catch (e) {
     console.error('[SECURITY] 无法解析/生成令牌密钥，回退临时随机值（重启将失效）：', e.message);
@@ -56,9 +96,14 @@ function resolveTokenSecret() {
 
 module.exports = {
   host: process.env.PGHOST || '127.0.0.1',
-  port: Number(process.env.PGPORT || 5432),
+  port: envPort('PGPORT', 5432),
   user: process.env.PGUSER || 'hvt',
-  password: process.env.PGPASSWORD || 'HvtApp2026',
+  // 口令一律由环境变量提供，代码里不留任何默认口令：
+  // 生产部署时由部署脚本随机生成并写入 .env 的 PGPASSWORD；
+  // 本地开发同样在 .env 里填自己那台 PostgreSQL 的口令。
+  // 这样一旦 .env 漏配，会以「空口令」连接并明确报认证失败，
+  // 而不是静默用一个人人皆知的弱口令去连库。
+  password: process.env.PGPASSWORD || '',
   database: process.env.PGDATABASE || 'house_view',
   // 令牌签名密钥（部署时务必通过环境变量 TOKEN_SECRET 设置，或由 .token-secret 文件持久化）
   tokenSecret: resolveTokenSecret(),
@@ -75,8 +120,8 @@ module.exports = {
   // 四样都填齐才算配置完成；未配置时相关操作明确报错，不会静默跳过验证。
   smtp: {
     host: process.env.SMTP_HOST || '',
-    port: Number(process.env.SMTP_PORT || 465),
-    secure: String(process.env.SMTP_SECURE || 'true') !== 'false',
+    port: envPort('SMTP_PORT', 465),
+    secure: envBool('SMTP_SECURE', true),
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || process.env.SMTP_USER || '',

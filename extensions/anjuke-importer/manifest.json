@@ -8,10 +8,9 @@
     "https://m.anjuke.com/*",
     "https://*.ke.com/*",
     "http://127.0.0.1:8787/*",
-    "http://localhost:8787/*",
-    "http://*/*"
+    "http://localhost:8787/*"
   ],
-  "optional_host_permissions": ["https://*/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": { "service_worker": "background.js" },
   "action": {
     "default_popup": "popup.html",
@@ -28,7 +27,10 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://*/*"],
+      "matches": [
+        "http://127.0.0.1:8787/*",
+        "http://localhost:8787/*"
+      ],
       "js": ["system-bridge.js"],
       "run_at": "document_idle"
     }

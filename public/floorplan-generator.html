@@ -67,7 +67,7 @@
     <div class="btns" style="margin-top:10px">
       <button class="act" id="export">导出 JSON</button>
       <button class="act alt" id="copy">复制 JSON</button>
-      <a class="act alt" id="openApp" href="floorplan.html?layout=a3b2b" target="_blank" style="text-decoration:none;display:inline-block;line-height:34px">打开装修设计页</a>
+      <a class="act alt" id="openApp" href="floorplan.html?layout=a3b2b" target="_blank" rel="noopener noreferrer" style="text-decoration:none;display:inline-block;line-height:34px">打开装修设计页</a>
     </div>
     <textarea id="out" readonly placeholder="导出的 JSON 会显示在这里"></textarea>
   </div>
@@ -78,6 +78,8 @@
 // ===================== 工具 =====================
 const $ = s => document.querySelector(s);
 const mm = v => Math.round(v);
+// F244: HTML/SVG 文本转义，防止房间名中的引号/尖括号突破属性或注入标记
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const MAT = {bedroom:'wood',living:'tile800',kitchen:'tile600',bath:'antislip',balcony:'walnut',hall:'tile800',other:'carpet',bay:'marble'};
 const TYPELABEL = {bedroom:'卧室',living:'客厅',kitchen:'厨房',bath:'卫生间',balcony:'阳台',hall:'过道',other:'其他'};
 function mkF(type,name,cx,cy,w,d,rot,color){return {id:'f'+Math.random().toString(36).slice(2,9),type,name,cx,cy,w,d,rot:rot||0,color:color||'#c9d6df'};}
@@ -110,13 +112,14 @@ function renderForm(){
   const box = $('#rooms'); box.innerHTML='';
   STATE.rooms.forEach((r,i)=>{
     const el = document.createElement('div'); el.className='room';
-    const sideOpts = s=>`<option value="${s}" ${r.bay===s?'selected':''}>${s}</option>`;
+    // F123: 按传入的当前值生成 selected，飘窗/阳台各自传入对应字段
+    const sideOpts = (s, current) => `<option value="${s}" ${current===s?'selected':''}>${s}</option>`;
     el.innerHTML = `
       <h3>房间 ${i+1}
         <select data-k="type">
           ${Object.entries(TYPELABEL).map(([v,t])=>`<option value="${v}" ${r.type===v?'selected':''}>${t}</option>`).join('')}
         </select>
-        <input data-k="name" value="${r.name}" style="width:90px"/>
+        <input data-k="name" value="${esc(r.name)}" style="width:90px"/>
         <button class="rm">删除</button>
       </h3>
       <div class="grid">
@@ -129,9 +132,9 @@ function renderForm(){
             <option value="T" ${r.shape==='T'?'selected':''}>T 形</option>
           </select></div>
         <div class="fld"><label>飘窗开在哪面</label>
-          <select data-k="bay"><option value="">无</option>${['N','S','E','W'].map(sideOpts).join('')}</select></div>
+          <select data-k="bay"><option value="">无</option>${['N','S','E','W'].map(s=>sideOpts(s,r.bay)).join('')}</select></div>
         <div class="fld"><label>阳台开在哪面</label>
-          <select data-k="balcony"><option value="">无</option>${['N','S','E','W'].map(sideOpts).join('')}</select></div>
+          <select data-k="balcony"><option value="">无</option>${['N','S','E','W'].map(s=>sideOpts(s,r.balcony)).join('')}</select></div>
         <div class="fld"><label>门开在哪面</label>
           <select data-k="door">${['N','S','E','W'].map(s=>`<option value="${s}" ${r.door===s?'selected':''}>${s}</option>`).join('')}</select></div>
       </div>
@@ -144,7 +147,12 @@ function renderForm(){
       inp.addEventListener(ev, ()=>{
         if(k==='win'){ r.win = [...el.querySelectorAll('input[data-k=win]:checked')].map(x=>x.value); }
         else if(inp.tagName==='SELECT') r[k]=inp.value;
-        else if(inp.type==='number') r[k]=+inp.value||0;
+        else if(inp.type==='number') {
+          // F121: 宽/高必须是有限正数，非法值不写回模型并提示，避免退化几何与破损 bounds
+          const num = Number(inp.value);
+          if (Number.isFinite(num) && num > 0) r[k] = num;
+          else { inp.value = r[k]; alert('宽和高必须是大于 0 的数字'); return; }
+        }
         else r[k]=inp.value;
         update();
       });
@@ -224,8 +232,11 @@ function genPlan(){
   const rooms0={}; ROOMS.forEach(r=>rooms0[r.id]={name:r.name, mat:r.mat});
   const xs=WALLS.flatMap(w=>[w[0],w[2]]), ys=WALLS.flatMap(w=>[w[1],w[3]]);
   const m=1400;
-  const bounds={x:mm(Math.min(...xs)-m),y:mm(Math.min(...ys)-m),w:mm(Math.max(...xs)-Math.min(...xs)+2*m),h:mm(Math.max(...ys)-Math.min(...ys)+2*m)};
-  const origin=[mm((Math.min(...xs)+Math.max(...xs))/2), mm((Math.min(...ys)+Math.max(...ys))/2)];
+  // F246: 房间被删光时 WALLS 为空，Math.min(...[]) 退化为 Infinity 会产生 NaN bounds
+  const minx=xs.length?Math.min(...xs):0, miny=ys.length?Math.min(...ys):0;
+  const maxx=xs.length?Math.max(...xs):0, maxy=ys.length?Math.max(...ys):0;
+  const bounds={x:mm(minx-m),y:mm(miny-m),w:mm(maxx-minx+2*m),h:mm(maxy-miny+2*m)};
+  const origin=[mm((minx+maxx)/2), mm((miny+maxy)/2)];
   return {WALLS,WINS,DOORS,SLIDES,ROOMS,furniture,rooms:rooms0,bounds,origin};
 }
 
@@ -272,13 +283,15 @@ function update(){
   STATE.last = g;
   const allx=[],ally=[];
   g.WALLS.forEach(w=>{allx.push(w[0],w[2]);ally.push(w[1],w[3]);});
-  const minx=Math.min(...allx),miny=Math.min(...ally),maxx=Math.max(...allx),maxy=Math.max(...ally);
+  // F246: 空 WALLS 时给出默认范围，避免 Infinity/NaN 破坏 viewBox
+  const minx=allx.length?Math.min(...allx):0, miny=ally.length?Math.min(...ally):0;
+  const maxx=allx.length?Math.max(...allx):0, maxy=ally.length?Math.max(...ally):0;
   const pad=400, W=maxx-minx+pad*2, H=maxy-miny+pad*2;
   let s=`<svg viewBox="${minx-pad} ${miny-pad} ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
   s+=`<rect x="${minx-pad}" y="${miny-pad}" width="${W}" height="${H}" fill="#faf8f2"/>`;
   g.ROOMS.forEach(r=>{ const pts=r.poly.map(p=>p.join(',')).join(' ');
     s+=`<polygon points="${pts}" fill="${r.counted===false?'#efe9dc':'#fff'}" stroke="#cfc6b4" stroke-width="2"/>`;
-    s+=`<text x="${r.at[0]}" y="${r.at[1]}" font-size="220" text-anchor="middle" fill="#666" dominant-baseline="central">${r.name}</text>`; });
+    s+=`<text x="${r.at[0]}" y="${r.at[1]}" font-size="220" text-anchor="middle" fill="#666" dominant-baseline="central">${esc(r.name)}</text>`; });
   g.WALLS.forEach(w=>{ s+=`<rect x="${w[0]}" y="${w[1]}" width="${Math.abs(w[2]-w[0])}" height="${Math.abs(w[3]-w[1])}" fill="#3a3730"/>`; });
   g.WINS.forEach(w=>{ s+=`<rect x="${Math.min(w[0],w[2])}" y="${Math.min(w[1],w[3])}" width="${Math.abs(w[2]-w[0])||4}" height="${Math.abs(w[3]-w[1])||4}" fill="#7fb0d8"/>`; });
   g.DOORS.forEach(d=>{ const r=d.rect; s+=`<rect x="${Math.min(r[0],r[2])}" y="${Math.min(r[1],r[3])}" width="${Math.abs(r[2]-r[0])||4}" height="${Math.abs(r[3]-r[1])||4}" fill="#c0392b"/>`; });
@@ -301,8 +314,27 @@ $('#layout').onchange=e=>{STATE.layout=e.target.value;update();};
 $('#addRoom').onclick=()=>{STATE.rooms.push(newRoom());renderForm();update();};
 $('#preset3').onclick=()=>{STATE.rooms=PRESETS.preset3.map(newRoom);renderForm();update();};
 $('#preset1').onclick=()=>{STATE.rooms=PRESETS.preset1.map(newRoom);renderForm();update();};
-$('#export').onclick=()=>{const t=exportJSON();const b=new Blob([t],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='户型方案_'+Date.now()+'.json';a.click();};
-$('#copy').onclick=()=>{const t=exportJSON();navigator.clipboard.writeText(t).then(()=>alert('已复制 JSON'));};
+$('#export').onclick=()=>{
+  const t=exportJSON();const b=new Blob([t],{type:'application/json'});
+  const url=URL.createObjectURL(b);const a=document.createElement('a');
+  a.href=url;a.download='户型方案_'+Date.now()+'.json';a.click();
+  // F012: 触发下载后释放 object URL，避免页面存活期间泄漏 blob
+  setTimeout(()=>URL.revokeObjectURL(url),0);
+};
+$('#copy').onclick=()=>{
+  const t=exportJSON();
+  // F122: 非 HTTPS / 权限拒绝时 Promise 会 reject，需 catch 并给出反馈与降级方案
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(t).then(()=>alert('已复制 JSON')).catch(()=>fallbackCopy(t));
+  } else fallbackCopy(t);
+};
+function fallbackCopy(t){
+  const ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';
+  document.body.appendChild(ta);ta.select();
+  try{ document.execCommand('copy'); alert('已复制 JSON'); }
+  catch(e){ alert('复制失败，请手动选中下方文本框内容复制'); }
+  finally{ ta.remove(); }
+}
 $('#bump').oninput=update; $('#shift').oninput=update;
 
 // 初始

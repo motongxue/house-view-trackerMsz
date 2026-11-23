@@ -5,7 +5,13 @@
 
 version: 2
 updates:
-  - package-ecosystem: "" # See documentation for possible values
+  - package-ecosystem: "npm" # 仓库根目录有 package.json
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10 # 避免首次运行刷屏 PR
+  - package-ecosystem: "github-actions" # .github/workflows 下的 action 版本也随依赖更新
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

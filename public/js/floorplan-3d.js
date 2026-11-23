@@ -129,7 +129,16 @@ function normalizePlan(input) {
   if (!input || typeof input !== 'object') return base;
   const p = Object.assign(base, clone(input));
   p.bounds = Object.assign({ w: 10, d: 8 }, input.bounds || {});
-  p.materials = Object.assign(clone(MATERIALS), input.materials || {});
+  // F167: 合并不可信 materials 时过滤 __proto__/constructor/prototype，避免原型污染；
+  // 目标用 Object.create(null) 彻底隔离原型链（materials 仅作键值表用）。
+  const safeMaterials = Object.create(null);
+  Object.assign(safeMaterials, clone(MATERIALS));
+  const inMat = input.materials || {};
+  Object.keys(inMat).forEach((k) => {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') return;
+    safeMaterials[k] = inMat[k];
+  });
+  p.materials = safeMaterials;
   p.rooms = Array.isArray(input.rooms) ? input.rooms.map((r) => Object.assign(
     { id: uid('r'), name: '房间', x: 0, z: 0, w: 3, d: 3, material: 'tile' }, r)) : base.rooms;
   p.walls = Array.isArray(input.walls) ? input.walls.map((w) => Object.assign(
@@ -377,8 +386,10 @@ function createInstance(host, opts) {
 
   /* ---------- 几何重建 ---------- */
   function clearGroup(g) {
+    // F053: 用 g.remove(c) 而非直接 pop children，清除 THREE 内部的 parent 反向引用
     while (g.children.length) {
-      const c = g.children.pop();
+      const c = g.children[g.children.length - 1];
+      g.remove(c);
       c.traverse((o) => {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
@@ -582,15 +593,17 @@ function createInstance(host, opts) {
   }
 
   function renderRooms() {
-    const optsHtml = Object.keys(plan.materials).map((k) =>
-      `<option value="${esc(k)}">${esc(matOf(plan, k).name)} · ¥${num(matOf(plan, k).price, 0)}/㎡</option>`).join('');
+    // F056: 按 key 显式写 selected，不再用字符串 replace（对含转义字符的 key 或缺失材质会选错/全不选）
+    const matKeys = Object.keys(plan.materials);
     $('fp-rooms').innerHTML = plan.rooms.map((r) => {
       const m = matOf(plan, r.material);
+      const optsHtml = matKeys.map((k) =>
+        `<option value="${esc(k)}"${k === r.material ? ' selected' : ''}>${esc(matOf(plan, k).name)} · ¥${num(matOf(plan, k).price, 0)}/㎡</option>`).join('');
       return `<div class="fp-room-row" data-fp-room="${esc(r.id)}">
         <input class="fp-room-name" data-fp-room-name="${esc(r.id)}" value="${esc(r.name)}" aria-label="房间名">
         <span class="fp-room-area">${areaOf(r).toFixed(1)}㎡</span>
         <select class="fp-room-mat" data-fp-room-mat="${esc(r.id)}" aria-label="地面材料">
-          ${optsHtml.replace('value="' + esc(r.material) + '"', 'value="' + esc(r.material) + '" selected')}
+          ${optsHtml}
         </select>
         <span class="fp-room-cost">¥${fmtMoney(areaOf(r) * num(m.price, 0))}</span>
       </div>`;
@@ -674,7 +687,7 @@ function createInstance(host, opts) {
   function onPointerDown(e) {
     if (!webglOK || e.button === 1) return;
     if (e.button === 2) {
-      drag = { type: 'pan', x: e.clientX, y: e.clientY };
+      drag = { type: 'pan', x: e.clientX, y: e.clientY, pointerId: e.pointerId };
       stage.setPointerCapture && stage.setPointerCapture(e.pointerId);
       e.preventDefault(); return;
     }
@@ -687,7 +700,8 @@ function createInstance(host, opts) {
     const hit = pick(e);
     if (hit && hit.type === 'furniture') {
       selected = { type: 'furniture', id: hit.id };
-      drag = { type: 'move', id: hit.id, moved: false };
+      // F180: 记录 pointerId，多指场景下只响应发起拖拽的那根指针
+      drag = { type: 'move', id: hit.id, moved: false, pointerId: e.pointerId };
       if (stage.setPointerCapture) { try { stage.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ } }
       renderPanels(); refreshSelectionHelper();
       return;
@@ -697,10 +711,12 @@ function createInstance(host, opts) {
       renderPanels(); refreshSelectionHelper();
       return;
     }
-    drag = { type: 'orbit', x: e.clientX, y: e.clientY };
+    drag = { type: 'orbit', x: e.clientX, y: e.clientY, pointerId: e.pointerId };
   }
   function onPointerMove(e) {
     if (!webglOK) return;
+    // F180: 忽略非发起指针的 move，避免多指/丢失 capture 后家具持续跟随
+    if (drag && drag.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
     if (mode === 'place' && preview) {
       const p = groundAt(e);
       if (p) {
@@ -738,10 +754,18 @@ function createInstance(host, opts) {
     }
   }
   function onPointerUp(e) {
+    if (drag && e.pointerId !== undefined && drag.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
     if (drag && drag.type === 'move' && drag.moved) { renderPanels(); changed(currentPlan()); }
     drag = null;
-    if (stage.releasePointerCapture && e.pointerId != null) {
+    if (stage.releasePointerCapture && e.pointerId !== undefined && e.pointerId !== null) {
       try { stage.releasePointerCapture(e.pointerId); } catch (err) { /* 已释放 */ }
+    }
+  }
+  // F180: capture 失败且指针移出 stage 时 pointerup 可能丢失，pointerleave 兜底复位拖拽
+  function onPointerLeave(e) {
+    if (drag && drag.type === 'move') {
+      if (drag.moved) { renderPanels(); changed(currentPlan()); }
+      drag = null;
     }
   }
   function onWheel(e) {
@@ -785,7 +809,8 @@ function createInstance(host, opts) {
     if (t.dataset.fpRotate) {
       const f = plan.furniture.find((x) => x.id === (selected && selected.id));
       if (!f) return;
-      f.rot = (num(f.rot, 0) + Number(t.dataset.fpRotate) + 360) % 360;
+      // F168: 用 num 兜底，避免空属性产生 NaN（虽有 truthy guard，显式更安全）
+      f.rot = (num(f.rot, 0) + num(t.dataset.fpRotate, 0) + 360) % 360;
       const g = furnGroup.children.find((x) => x.userData.furnId === f.id);
       if (g) g.rotation.y = f.rot * Math.PI / 180;
       commit(false); refreshSelectionHelper(); return;
@@ -798,22 +823,25 @@ function createInstance(host, opts) {
   }
   function onInputChange(e) {
     const t = e.target;
-    if (t.dataset.fpRoomName != null) {
+    // F168: dataset 值恒为字符串，用显式 !== undefined 判定，避免 != null 把空串也当作有效键
+    if (t.dataset.fpRoomName !== undefined) {
       const r = plan.rooms.find((x) => x.id === t.dataset.fpRoomName);
       if (r) { r.name = t.value.slice(0, 20); commit(false); updateLabels(); }
       return;
     }
-    if (t.dataset.fpRoomMat != null) {
+    if (t.dataset.fpRoomMat !== undefined) {
       const r = plan.rooms.find((x) => x.id === t.dataset.fpRoomMat);
       if (r) { r.material = t.value; commit(true); }
       return;
     }
-    if (t.dataset.fpF != null && selected && selected.type === 'furniture') {
+    if (t.dataset.fpF !== undefined && selected && selected.type === 'furniture') {
       const f = plan.furniture.find((x) => x.id === selected.id);
       if (!f) return;
       const def = CAT_BY_KIND[f.kind] || CATALOG[0];
       const key = t.dataset.fpF;
-      const v = clamp(num(t.value, def[key]), 0.2, 6);
+      // F162: 高度 h 使用自身上限 4（宽/深仍为 6），与 input 声明的 max 一致
+      const hi = key === 'h' ? 4 : 6;
+      const v = clamp(num(t.value, def[key]), 0.2, hi);
       f[key] = v;
       const g = furnGroup.children.find((x) => x.userData.furnId === f.id);
       if (g) g.scale.set(num(f.w, def.w) / def.w, num(f.h, def.h) / def.h, num(f.d, def.d) / def.d);
@@ -847,7 +875,7 @@ function createInstance(host, opts) {
   root.addEventListener('click', onClick);
   root.addEventListener('change', onInputChange);
   root.addEventListener('input', (e) => {
-    if (e.target.dataset && e.target.dataset.fpRoomName != null) {
+    if (e.target.dataset && e.target.dataset.fpRoomName !== undefined) {
       const r = plan.rooms.find((x) => x.id === e.target.dataset.fpRoomName);
       if (r) { r.name = e.target.value.slice(0, 20); updateLabels(); changed(currentPlan()); }
     }
@@ -856,6 +884,7 @@ function createInstance(host, opts) {
   stage.addEventListener('pointermove', onPointerMove);
   stage.addEventListener('pointerup', onPointerUp);
   stage.addEventListener('pointercancel', onPointerUp);
+  stage.addEventListener('pointerleave', onPointerLeave);
   stage.addEventListener('wheel', onWheel, { passive: false });
   stage.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -871,10 +900,15 @@ function createInstance(host, opts) {
       destroyed = true;
       cancelAnimationFrame(raf);
       if (ro) { ro.disconnect(); ro = null; }
-      if (webglOK) {
-        clearGroup(floorGroup); clearGroup(wallGroup); clearGroup(furnGroup); clearGroup(markerGroup);
-        if (renderer) { renderer.dispose(); if (renderer.domElement.parentNode) renderer.domElement.remove(); }
+      // F052: 按资源是否实际创建来无条件释放，而非依赖 webglOK。
+      // initGL 中途抛错时 webglOK=false 但 renderer/canvas 可能已创建，旧逻辑会跳过 dispose 造成泄漏。
+      clearGroup(floorGroup); clearGroup(wallGroup); clearGroup(furnGroup); clearGroup(markerGroup);
+      if (preview) {
+        if (preview.geometry) preview.geometry.dispose();
+        if (preview.material) preview.material.dispose();
+        preview = null;
       }
+      if (renderer) { renderer.dispose(); if (renderer.domElement.parentNode) renderer.domElement.remove(); renderer = null; }
       host.innerHTML = '';
     }
   };

@@ -7,11 +7,11 @@
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=18 <23"
   },
   "license": "MIT",
   "private": true,
-  "devDependencies": {
+  "dependencies": {
     "pg": "^8.23.1"
   }
 }

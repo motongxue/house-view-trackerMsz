@@ -61,6 +61,13 @@
     });
   });
 
+  // HOT 是硬编码展示名单：数据更新后若城市改名会被静默过滤掉，这里校验并告警，自动剔除无效项（F077）。
+  const HOT_VALID = HOT.filter(function (c) {
+    const ok = !!byCity[norm(c)];
+    if (!ok) console.warn('[regions] HOT 城市未匹配行政区划数据：' + c);
+    return ok;
+  });
+
   // ---------- 对外 API ----------
   // 直辖市会出现「上海市 › 上海市 › 黄浦区」，显示层去掉同名重复；数据层仍保留完整三级
   function partsOf(x) {
@@ -79,7 +86,7 @@
     limit = limit || 40;
     const raw = String(q == null ? '' : q).trim();
     if (!raw) {
-      return HOT.map(function (c) {
+      return HOT_VALID.map(function (c) {
         const h = (byCity[norm(c)] || [])[0];
         return h ? { p: h.p, c: h.c, d: '', level: 2, score: 0 } : null;
       }).filter(Boolean);
@@ -175,14 +182,18 @@
     if (!s) return null;
     let best = null;
     DISTRICTS.forEach(function (x) {
-      if (STOP.has(x.d) || x.d.length < 3) return;
-      if (s.indexOf(x.d) >= 0 && (!best || x.d.length > best.d.length)) best = x;
+      const nd = norm(x.d);
+      // F076: 按归一化后的名字判断长度，并与 STOP 结合，避免漏掉合法的短区县名。
+      if (STOP.has(x.d) || STOP.has(nd) || nd.length < 2) return;
+      if ((s.indexOf(x.d) >= 0 || s.indexOf(nd) >= 0) && (!best || x.d.length > best.d.length)) best = x;
     });
     if (best) return { province: best.p, city: best.c, district: best.d };
     let bc = null;
     CITIES.forEach(function (x) {
       const c = norm(x.c);
-      if (c.length >= 2 && s.indexOf(x.c) >= 0 && (!bc || x.c.length > bc.c.length)) bc = x;
+      if (c.length < 2 || STOP.has(x.c) || STOP.has(c)) return; // F209: 与区县一致加 STOP 守卫
+      // 全名或去后缀短名都参与匹配（文本只写「吉林」也能命中「吉林市」），优先更具体的长名（F209）
+      if ((s.indexOf(x.c) >= 0 || s.indexOf(c) >= 0) && (!bc || c.length > norm(bc.c).length)) bc = x;
     });
     if (bc) return { province: bc.p, city: bc.c, district: '' };
     return null;

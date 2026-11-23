@@ -17,11 +17,18 @@ const Auth = (function () {
   let sentEmail = '';       // 已成功发码的邮箱（发码后不允许偷偷换邮箱）
   let sentPurpose = '';     // register | code-login | reset
   let tickTimer = null;
+  let cooldownUntil = 0;    // 发码冷却到期时间戳（ms）：切换模式不清除，避免绕过前端冷却（F061）
   // 邮箱验证码总开关：由后端 /api/auth/config 下发，默认 false（未取到时按关闭处理，保证开箱即用）
   // false：登录页只有「密码登录」，注册只过图形验证码；true：显示验证码登录/找回密码完整流程
   let emailVerification = false;
   const REMEMBER_KEY = 'hvt_remember_email';
   const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  // 策略常量：须与后端 server.js 的 PASSWORD_MIN / EMAIL_CODE_TTL / 发码限流保持一致（F057）。
+  // 后端调整时同步这里，避免前端放行而后端拒绝。
+  const PASSWORD_MIN = 8;
+  const EMAIL_CODE_LEN = 6;
+  const CODE_RESEND_SECONDS = 60;
+  const CODE_RE = new RegExp('^\\d{' + EMAIL_CODE_LEN + '}$');
 
   const el = (id) => document.getElementById(id);
   const emailValue = () => (el('auth-email').value || '').trim().toLowerCase();
@@ -96,7 +103,7 @@ const Auth = (function () {
       : (mode === 'reset' ? '重置密码' : '登录');
     const pw = el('auth-password');
     pw.autocomplete = (mode === 'signup' || mode === 'reset') ? 'new-password' : 'current-password';
-    if (mode === 'signup') pw.setAttribute('minlength', '8');
+    if (mode === 'signup') pw.setAttribute('minlength', String(PASSWORD_MIN));
     else pw.removeAttribute('minlength');
 
     el('auth-switch-tip').textContent = mode === 'signup' ? '已有账户？'
@@ -107,7 +114,7 @@ const Auth = (function () {
 
     setMsg('');
     closeCaptcha();
-    stopCountdown();
+    syncCountdownButton(); // 切换模式只重绘按钮，不清除冷却，避免提前解锁发码（F061）
     sentEmail = '';
     sentPurpose = '';
     scrubPasswords();
@@ -244,25 +251,34 @@ const Auth = (function () {
   }
 
   // ---------- 发邮箱验证码 ----------
+  // 冷却用「到期时间戳」记录，切模式只重绘按钮不重置，防止通过切模式绕过前端冷却（F061）
   function startCountdown(sec) {
     stopCountdown();
+    cooldownUntil = Date.now() + sec * 1000;
     const btn = el('auth-get-code');
-    let left = sec;
-    const render = () => {
-      btn.disabled = left > 0;
-      btn.textContent = left > 0 ? left + 's 后重发' : '获取验证码';
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+      if (btn) {
+        btn.disabled = left > 0;
+        btn.textContent = left > 0 ? left + 's 后重发' : '获取验证码';
+      }
+      if (left <= 0) { clearInterval(tickTimer); tickTimer = null; }
     };
-    render();
-    tickTimer = setInterval(() => {
-      left--;
-      if (left <= 0) { stopCountdown(); return; }
-      render();
-    }, 1000);
+    tick();
+    tickTimer = setInterval(tick, 1000);
   }
   function stopCountdown() {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    cooldownUntil = 0;
     const b = el('auth-get-code');
     if (b) { b.disabled = false; b.textContent = '获取验证码'; }
+  }
+  function syncCountdownButton() {
+    const b = el('auth-get-code');
+    if (!b) return;
+    const left = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+    b.disabled = left > 0;
+    b.textContent = left > 0 ? left + 's 后重发' : '获取验证码';
   }
   function purposeOfMode() {
     return mode === 'signup' ? 'register' : (mode === 'reset' ? 'reset' : 'code-login');
@@ -276,11 +292,11 @@ const Auth = (function () {
       const r = await Api.emailCode(email, purpose, cap);
       sentEmail = email;
       sentPurpose = purpose;
-      startCountdown(60);
+      startCountdown(CODE_RESEND_SECONDS);
       setMsg(r.data && r.data.devMode ? '验证码已发送（开发模式见控制台）' : '验证码已发送', true);
       el('auth-email-code').focus();
     } catch (err) {
-      const raw = err.message || '';
+      const raw = (err && err.message) || ''; // F186: 拒绝值可能为 null / 非 Error
       if (/已注册/.test(raw)) {
         switchMode('password');
         setMsg('该邮箱已注册，请直接登录');
@@ -312,7 +328,7 @@ const Auth = (function () {
   function assertCodeAndEmail(purpose) {
     const email = emailValue();
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); return false; }
-    if (!/^\d{6}$/.test(codeValue())) { setMsg('请输入 6 位验证码'); return false; }
+    if (!CODE_RE.test(codeValue())) { setMsg('请输入 ' + EMAIL_CODE_LEN + ' 位验证码'); return false; }
     if (sentEmail !== email || sentPurpose !== purpose) { setMsg('请先获取验证码'); return false; }
     return true;
   }
@@ -339,7 +355,7 @@ const Auth = (function () {
       const data = await Api.login(email, pw, cap);
       finishLogin(data.data);
     } catch (err) {
-      const raw = err.message || '';
+      const raw = (err && err.message) || '';
       if (/NEED_CAPTCHA/.test(raw)) { setMsg('请先完成安全验证'); openCaptcha('password-login'); }
       else if (/验证未通过/.test(raw)) { setMsg('验证未通过，请重试'); openCaptcha('password-login'); }
       else setMsg(shortError(raw));
@@ -353,7 +369,7 @@ const Auth = (function () {
     try {
       const data = await Api.loginByCode(emailValue(), codeValue());
       finishLogin(data.data);
-    } catch (err) { setMsg(shortError(err.message)); }
+    } catch (err) { setMsg(shortError(err && err.message)); }
     finally { btn.disabled = false; }
   }
 
@@ -361,14 +377,14 @@ const Auth = (function () {
   function startSignup() {
     const email = emailValue(), pw = el('auth-password').value;
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
-    if (pw.length < 8) { setMsg('密码至少 8 位'); el('auth-password').focus(); return; }
+    if (pw.length < PASSWORD_MIN) { setMsg('密码至少 ' + PASSWORD_MIN + ' 位'); el('auth-password').focus(); return; }
     setMsg('');
     openCaptcha('signup-register');
   }
 
   async function submitSignup(cap) {
     const pw = el('auth-password').value;
-    if (pw.length < 8) { setMsg('密码至少 8 位'); return; }
+    if (pw.length < PASSWORD_MIN) { setMsg('密码至少 ' + PASSWORD_MIN + ' 位'); return; }
     if (emailVerification) {
       // 开启：沿用邮箱验证码流程
       if (!assertCodeAndEmail('register')) return;
@@ -382,7 +398,7 @@ const Auth = (function () {
       const data = await Api.register(emailValue(), pw, emailVerification ? codeValue() : '', cap);
       finishLogin(data.data);
     } catch (err) {
-      const raw = err.message || '';
+      const raw = (err && err.message) || '';
       if (/已注册/.test(raw)) { switchMode('password'); setMsg('该邮箱已注册，请直接登录'); }
       else if (/验证未通过/.test(raw)) { setMsg(shortError(raw)); openCaptcha('signup-register'); }
       else setMsg(shortError(raw));
@@ -392,7 +408,7 @@ const Auth = (function () {
   async function submitReset() {
     if (!assertCodeAndEmail('reset')) return;
     const np = el('auth-new-password').value, np2 = el('auth-new-password2').value;
-    if (np.length < 8) { setMsg('新密码至少 8 位'); return; }
+    if (np.length < PASSWORD_MIN) { setMsg('新密码至少 ' + PASSWORD_MIN + ' 位'); return; }
     if (np !== np2) { setMsg('两次密码不一致'); return; }
     const btn = el('auth-submit');
     btn.disabled = true; setMsg('');
@@ -400,7 +416,7 @@ const Auth = (function () {
       await Api.resetPassword(emailValue(), codeValue(), np);
       switchMode('password');
       setMsg('密码已重置，请登录', true);
-    } catch (err) { setMsg(shortError(err.message)); }
+    } catch (err) { setMsg(shortError(err && err.message)); }
     finally { btn.disabled = false; }
   }
 

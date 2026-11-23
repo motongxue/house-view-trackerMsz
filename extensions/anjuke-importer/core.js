@@ -50,30 +50,33 @@
   function get(o, path) {
     var v = o;
     var ks = String(path || '').split('.');
-    for (var i = 0; i < ks.length; i++) { if (v == null) return ''; v = v[ks[i]]; }
-    return v == null ? '' : v;
+    for (var i = 0; i < ks.length; i++) { if (v === null || v === undefined) return ''; v = v[ks[i]]; }
+    return (v === null || v === undefined) ? '' : v;
   }
   function set(o, path, val) {
     var ks = path.split('.'), v = o;
     for (var i = 0; i < ks.length - 1; i++) {
-      if (v[ks[i]] == null || typeof v[ks[i]] !== 'object') v[ks[i]] = {};
+      if (v[ks[i]] === null || v[ks[i]] === undefined || typeof v[ks[i]] !== 'object') v[ks[i]] = {};
       v = v[ks[i]];
     }
     v[ks[ks.length - 1]] = val;
   }
   function firstNum(v) {
-    var m = String(v == null ? '' : v).match(/-?\d+(?:\.\d+)?/);
+    var m = String((v === null || v === undefined) ? '' : v).match(/-?\d+(?:\.\d+)?/);
     return m ? parseFloat(m[0]) : '';
   }
   // 页面里的经纬度常是字符串；详情页/录入页会对 geo.lng/lat 调 .toFixed()，字符串直接抛 TypeError
-  function coordNum(v) {
-    if (v === '' || v == null) return '';
+  // F178：除类型与有限性外，再校验取值范围（纬度 [-90,90]，经度 [-180,180]），越界返回空
+  function coordNum(v, isLat) {
+    if (v === '' || v === null || v === undefined) return '';
     var n = Number(v);
-    return isFinite(n) ? n : '';
+    if (!isFinite(n)) return '';
+    if (isLat ? (n < -90 || n > 90) : (n < -180 || n > 180)) return '';
+    return n;
   }
   // 「住宅：2.5 别墅：2.5」这类多物业类型值，去掉类型标签后取第一段
   function cleanMulti(v) {
-    var s = String(v == null ? '' : v)
+    var s = String((v === null || v === undefined) ? '' : v)
       .replace(/(?:住宅|别墅|商业|公寓|写字楼|商铺|洋房)\s*[:：]\s*/g, ' ')
       .replace(/\s+/g, ' ').trim();
     return (s.split(' ')[0] || s).trim();
@@ -85,7 +88,7 @@
     });
     return out;
   }
-  function safeText(v) { return String(v == null ? '' : v).trim(); }
+  function safeText(v) { return String((v === null || v === undefined) ? '' : v).trim(); }
   // 系统 parseCsv 用 split(',') 且不解析引号，所以单元格里绝不能出现英文逗号/双引号/换行
   function sanitizeCsv(v) {
     return safeText(v).replace(/[\r\n]+/g, '；').replace(/,/g, '，').replace(/"/g, "'");
@@ -119,7 +122,7 @@
   }
   function round8(n) { return Math.round(n * 1e8) / 1e8; }
   function normalizeGeo(lng, lat, coordSystem, sourceLabel) {
-    var a = coordNum(lng), b = coordNum(lat);
+    var a = coordNum(lng, false), b = coordNum(lat, true);
     if (a === '' || b === '') return null;         // 只有半个坐标 / 非法值 -> 未定位
     if (coordSystem === 'BD09') {
       var g = bd09ToGcj02(a, b);
@@ -165,7 +168,7 @@
    * 只处理白名单 host + 白名单路径前缀 + 不带 '!' 指令的图片；已带指令的链接、本地 /media/、
    * data:、其它站点一律原样返回，不会破坏手动录入或安居客的图片。 */
   function mediaUrl(u) {
-    var s = String(u == null ? '' : u).trim();
+    var s = String((u === null || u === undefined) ? '' : u).trim();
     var m = s.match(/^(https?:\/\/)([^/?#]+)(\/[^?#]*)(\?[^#]*)?(#.*)?$/i);
     if (!m) return s;
     var host = m[2].toLowerCase(), p = m[3];
@@ -195,8 +198,9 @@
    * raw = { fields:{路径:值}, media, notesLines, geoSystem, geoSourceLabel,
    *         name, hasMain, hasParams, singlePage, extras:{links,permits,groups,coordSource,...} } */
   function build(siteId, saved, meta) {
-    var site = SITES[siteId] || SITES.anjuke;
-    if (!site) throw new Error('没有注册任何站点适配器');
+    // F179：未知 siteId 显式报错，不再静默用 anjuke 适配器套到别的页面上
+    var site = SITES[siteId];
+    if (!site) throw new Error('没有注册站点适配器：' + siteId);
     var raw = site.extract(saved || {}, meta || {}) || {};
     var fields = raw.fields || {};
     var row = {};
@@ -205,7 +209,7 @@
     CSV_COLS.forEach(function (c) {
       if (c[0] === 'notes' || c[0].indexOf('geo.') === 0) return; // 单独处理
       var v = fields[c[0]];
-      set(row, c[0], (v === '' || v == null || v === undefined) ? '' : normalizeValue(c[0], v));
+      set(row, c[0], (v === '' || v === null || v === undefined) ? '' : normalizeValue(c[0], v));
     });
 
     var media = Object.assign(emptyMedia(), raw.media || {});
@@ -215,7 +219,7 @@
     row.notes = joinNotes(raw.notesLines);
 
     var filled = CSV_COLS.filter(function (c) {
-      var v = get(row, c[0]); return v !== '' && v != null;
+      var v = get(row, c[0]); return v !== '' && v !== null && v !== undefined;
     }).length;
     var extras = raw.extras || {};
     var stats = {

@@ -1,15 +1,25 @@
 {
-  "version": "v1.10.1",
-  "date": "2026-11-22",
-  "notes": "修复装修设计页打不开：服务端给所有页面都发了 X-Frame-Options: DENY，只给基础布置页开了同源例外；v1.10.0 改成默认内嵌「高级设计」后，设计器页仍被 DENY，浏览器直接拦下并显示「拒绝了我们的连接请求」。现把设计器页也加入同源白名单。",
-  "package": "house-view-tracker-linux-x64_v1.10.1.tar.gz",
+  "version": "v1.10.3",
+  "date": "2026-11-23",
+  "notes": "安全收口：删掉 config/db.js 里硬编码的数据库默认口令。生产部署时库口令由部署脚本随机生成并写入 .env，代码里再留一个固定默认值只会在 .env 漏配时静默生效。现在口令一律来自 PGPASSWORD，缺失时启动即打印明确提示。",
+  "package": "house-view-tracker-linux-x64_v1.10.3.tar.gz",
   "downloadUrls": [
-    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.10.1/house-view-tracker-linux-x64_v1.10.1.tar.gz",
-    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.10.1/house-view-tracker-linux-x64_v1.10.1.tar.gz"
+    "https://gitee.com/mo_shan_zhu/house-view-tracker/releases/download/v1.10.3/house-view-tracker-linux-x64_v1.10.3.tar.gz",
+    "https://github.com/motongxue/house-view-trackerMsz/releases/download/v1.10.3/house-view-tracker-linux-x64_v1.10.3.tar.gz"
   ],
   "downloadUrl": "",
   "installDir": "/opt/house-view-tracker",
   "changelog": [
+    {
+      "version": "v1.10.3",
+      "date": "2026-11-23",
+      "notes": "**删掉代码里写死的数据库口令**。原来 `config/db.js` 里有一个固定的默认口令兜底，而实际部署时数据库口令是由部署脚本随机生成后写进 `.env` 的，两者本来就对不上；一旦 `.env` 漏配或没读到，服务就会静默拿那个众人皆知的默认口令去连库，既连不上真库，又留下了「弱口令就在源码里」的隐患。\n现在口令只有一个来源：环境变量 `PGPASSWORD`。没配的时候服务仍会启动，但控制台会先打一条 `[SECURITY] 未设置数据库口令 PGPASSWORD`，连接失败时也会直接指出「原因很可能是没配 PGPASSWORD」，不用再对着 `client password must be a string` 这种底层报错猜。\n`.env.example` 也补上了数据库这一段，本地开发和部署都能照着填。\n**本版改了 server.js / config/db.js，手工部署必须整包覆盖 + 重启；一键升级可用。**"
+    },
+    {
+      "version": "v1.10.2",
+      "date": "2026-11-23",
+      "notes": "**代码审查问题集中修复**（对 388 条审查意见逐条核实：真问题 249 / 误报 54 / 设计如此 56 / 信息不足 29，本版修复其中 233 条）。\n高优先修复：① CSV 导出带引号字段、导入却按逗号硬切，备注含逗号就整行错位 → 数据损坏，已重写引号感知解析；② 服务器直连公网却信任 X-Forwarded-For，可伪造 IP 绕过登录/发码限流 → 改为只认真实 TCP 对端；③ `pg` 是运行时依赖却写在 devDependencies，生产 omit=dev 会启动崩溃 → 移入 dependencies；④ 上传接口 401 不踢登录态、设计器存档先删后写可能丢稿、空搜索恒命中第一个小区、监控面板刷新失败后卡死；⑤ 房间名未转义的 XSS、CSS 缺失的 5 个字号变量、扩展 token 外发路径与过宽权限、升级流程的跳转复检与解包校验。\n另修复 41 条中危与 184 条低优先级写法/边界问题；16 条高风险几何算法与业务数值口径按约定跳过，留待重构。\n**本版改了 server.js / upgrade.js / package.json，手工部署必须整包覆盖 + 重启；一键升级可用。**"
+    },
     {
       "version": "v1.10.1",
       "date": "2026-11-22",

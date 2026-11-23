@@ -113,9 +113,17 @@ function cutPieces(x, y, w, h){
   return out;
 }
 // 画布显示 / 网格 / 吸附只认「裁剪块 ∩ 房间」的有效小片，任何时刻都不会有框落在空白处
+// F247: 内容签名缓存。effCuts 被 axisCoords/buildGrid/bounds/isExterior/cands 等反复调用，
+// 拖拽时一帧内会重算多次 O(cuts*rooms)。签名基于每个 cut/room 的坐标值，
+// 无论数组被替换还是对象被就地修改（drag），值一变即失效，值不变则复用上一帧结果。
+let _effCache = { sig:null, val:[] };
 function effCuts(){
+  const sig = cuts.map(c => c.id+':'+c.x+','+c.y+','+c.w+','+c.h).join('|') + '#' +
+              rooms.map(r => r.id+':'+r.x+','+r.y+','+r.w+','+r.h).join('|');
+  if(sig === _effCache.sig) return _effCache.val;
   const out = [];
   cuts.forEach(c => cutPieces(c.x, c.y, c.w, c.h).forEach(p => out.push(Object.assign({}, p, {id:c.id}))));
+  _effCache = { sig, val:out };
   return out;
 }
 function cleanupCuts(){
@@ -648,6 +656,12 @@ svg.addEventListener('pointerdown', ev => {
   sel = null; pend = null; render();
 });
 
+// F128: 拖拽期间用 rAF 节流 render，避免每次 pointermove 都重建整个 SVG + 重绑监听器造成卡顿
+let _renderRaf = 0;
+function scheduleRender(){
+  if(_renderRaf) return;
+  _renderRaf = requestAnimationFrame(() => { _renderRaf = 0; render(); });
+}
 svg.addEventListener('pointermove', ev => {
   if(!drag) return;
   const p = pt(ev);
@@ -659,14 +673,14 @@ svg.addEventListener('pointermove', ev => {
       if(Math.abs(q.x - a.x) >= Math.abs(q.y - a.y)) drag.cur = {x:q.x, y:a.y};
       else drag.cur = {x:a.x, y:q.y};
     }
-    render(); return;
+    scheduleRender(); return;
   }
   if(drag.mode === 'wpt'){
     const q = snapPt(p), w = drag.w;
     const other = drag.which === '1' ? {x:w.x2, y:w.y2} : {x:w.x1, y:w.y1};
     if(Math.abs(q.x - other.x) >= Math.abs(q.y - other.y)) q.y = other.y; else q.x = other.x;
     if(drag.which === '1'){ w.x1 = q.x; w.y1 = q.y; } else { w.x2 = q.x; w.y2 = q.y; }
-    render(); return;
+    scheduleRender(); return;
   }
   const o = drag.o, s0 = drag.start, R0 = drag.rect;
   if(drag.mode === 'move'){
@@ -674,7 +688,7 @@ svg.addEventListener('pointermove', ev => {
     let nx = snap(R0.x + dx, 'x', o.id), ny = snap(R0.y + dy, 'y', o.id);
     const nx2 = snap(R0.x + dx + R0.w, 'x', o.id); if(Math.abs(nx2 - (nx + R0.w)) < SNAP) nx = nx2 - R0.w;
     const ny2 = snap(R0.y + dy + R0.h, 'y', o.id); if(Math.abs(ny2 - (ny + R0.h)) < SNAP) ny = ny2 - R0.h;
-    o.x = Math.round(nx); o.y = Math.round(ny); render();
+    o.x = Math.round(nx); o.y = Math.round(ny); scheduleRender();
   } else {
     // 手柄贴的是"实际轮廓外接框"，它的位移量等比映射回房间矩形
     const hd = drag.handle, R0 = drag.rect;
@@ -690,7 +704,7 @@ svg.addEventListener('pointermove', ev => {
     o.y = Math.round(R0.y + (by0 - BB.y0));
     o.w = Math.max(m, Math.round(R0.w + (bx1 - BB.x1) - (bx0 - BB.x0)));
     o.h = Math.max(m, Math.round(R0.h + (by1 - BB.y1) - (by0 - BB.y0)));
-    render();
+    scheduleRender();
   }
 });
 
@@ -712,11 +726,17 @@ svg.addEventListener('pointerup', ev => {
   }
   if(drag){
     drag = null;
-    if(cleanupCuts()) flashHint('裁剪块已移出房间，自动移除');
+    // F126: 按实际移除数量提示，不再固定文案；0 个时不打扰用户
+    const removed = cleanupCuts();
+    if(removed) flashHint('已自动移除 ' + removed + ' 个移出房间的裁剪块');
+    // F128: 取消拖拽期未执行的节流帧，同步渲染最终状态
+    if(_renderRaf){ cancelAnimationFrame(_renderRaf); _renderRaf = 0; }
     render();
   }
 });
-svg.addEventListener('pointercancel', () => { if(drag){ drag = null; cleanupCuts(); render(); } });
+svg.addEventListener('pointercancel', () => {
+  if(drag){ drag = null; cleanupCuts(); if(_renderRaf){ cancelAnimationFrame(_renderRaf); _renderRaf = 0; } render(); }
+});
 
 function completeDraw(a, b){
   if(tool === 'cut'){
@@ -844,9 +864,12 @@ function exportJSON(){
   const txt = JSON.stringify(out, null, 2);
   const blob = new Blob([txt], {type:'application/json'});
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = '户型方案_' + Date.now() + '.json';
   a.click();
+  // F014: 触发下载后释放 object URL，避免每次导出泄漏一个 blob
+  setTimeout(() => URL.revokeObjectURL(url), 0);
   window.__lastExport = txt;
   return txt;
 }
@@ -873,16 +896,36 @@ function exampleLayout(){
   sel = null; pend = null; render();
 }
 
+// F013: 公开 API 的数值字段强制为有限数，避免 undefined/NaN 污染 bounds 产生 NaN viewBox
+function _num(v, d){ const n = Number(v); return Number.isFinite(n) ? n : d; }
+function _validRoom(spec){
+  const s = Object.assign({}, spec || {});
+  ['x','y','w','h'].forEach(k => { s[k] = _num(s[k], k === 'w' || k === 'h' ? 3600 : 0); });
+  if(s.w <= 0) s.w = 3600;
+  if(s.h <= 0) s.h = 3600;
+  return s;
+}
+function _validWall(w){
+  const s = Object.assign({}, w || {});
+  ['x1','y1','x2','y2'].forEach(k => { s[k] = _num(s[k], 0); });
+  s.t = Math.max(60, _num(s.t, WALL_T));
+  return s;
+}
+function _validRectObj(o){
+  const s = Object.assign({}, o || {});
+  ['x','y','w','h'].forEach(k => { s[k] = _num(s[k], 0); });
+  return s;
+}
 window.HVT_EDITOR = {
-  addRoom:(spec) => { rooms.push(Object.assign(R('房间','bedroom',0,0,3600,3600), spec)); render(); },
-  addCut:(c) => { cuts.push(Object.assign({id:uid()}, c)); render(); },
-  addWall:(w) => { walls.push(Object.assign({id:uid(), t:WALL_T}, w)); render(); },
-  addOpen:(o) => { opens.push(Object.assign({id:uid()}, o)); render(); },
+  addRoom:(spec) => { rooms.push(Object.assign(R('房间','bedroom',0,0,3600,3600), _validRoom(spec))); render(); },
+  addCut:(c) => { cuts.push(Object.assign({id:uid()}, _validRectObj(c))); render(); },
+  addWall:(w) => { walls.push(Object.assign({id:uid(), t:WALL_T}, _validWall(w))); render(); },
+  addOpen:(o) => { opens.push(Object.assign({id:uid()}, _validRectObj(o))); render(); },
   setTool,
   reset:() => { rooms = []; cuts = []; walls = []; opens = []; sel = null; pend = null; render(); },
   rooms:() => rooms, cuts:() => cuts, walls:() => walls, opens:() => opens,
   exportJSON, generateGeometry,
-  setRooms:(rs) => { rooms = rs; render(); },
+  setRooms:(rs) => { rooms = Array.isArray(rs) ? rs.map(_validRoom) : []; render(); },
   select:(id) => { sel = id; render(); },
 };
 

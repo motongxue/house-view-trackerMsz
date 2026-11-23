@@ -58,7 +58,7 @@ create table if not exists properties (
 ### 已为你初始化（无需你再做）
 - 专用角色 `hvt`（低权限）、专用库 `house_view`（owner=hvt）、public schema 授权、表与索引。
 - 你的 PostgreSQL 超级用户 `postgres` 密码**已还原为你提供的原始值**，不影响你其他程序。
-- 应用连接配置见 `config/db.js`（默认指向本机库 `house_view`；**部署时务必用环境变量 `PGPASSWORD` 覆盖默认开发口令**，生产库口令不要写进任何文件）。
+- 应用连接配置见 `config/db.js`：主机/端口/用户/库名有本地开发默认值，**口令没有任何默认值**，一律由环境变量 `PGPASSWORD` 提供（生产由部署脚本随机生成后写进 `.env`；本地开发在 `.env` 里填本机 PostgreSQL 的口令）。漏配时服务仍会启动，但会打印一条 `[SECURITY] 未设置数据库口令 PGPASSWORD` 提示，随后连接报认证失败。
 
 > ⚠️ 前提：本机 **PostgreSQL 服务要处于运行状态**。若启动应用后接口报“无法连接服务器”，多半是 PG 服务没开。可在 Windows 服务里启动 `postgresql-x64-15`，或管理员命令行 `net start postgresql-x64-15`。
 

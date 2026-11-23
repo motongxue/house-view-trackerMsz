@@ -5,36 +5,50 @@
  */
 (function () {
   'use strict';
-  var $ = function (id) { return document.getElementById(id); };
-  var state = null;
-  var cfgState = null;     // 后台回传的 cfg（base / hasToken / connOk）
-  var autoFixed = false;   // 每次打开弹窗最多自动补加载一次，避免反复注入
+  const $ = function (id) { return document.getElementById(id); };
+  let state = null;
+  let cfgState = null;     // 后台回传的 cfg（base / hasToken / connOk）
+  let autoFixed = false;   // 每次打开弹窗最多自动补加载一次，避免反复注入
+  let autoFixState = '';   // F152：'' / 'doing' / 'failed'，纳入 renderDiag 统一渲染
+  let autoFixErr = '';
 
   function say(s) { $('msg').textContent = s || ''; if (s) setTimeout(function () { if ($('msg').textContent === s) $('msg').textContent = ''; }, 5000); }
-  function send(m, cb) { chrome.runtime.sendMessage(m, function (r) { cb && cb(r || {}); }); }
+  // F255：捕获 lastError，扩展重载后给出可读错误而不是空提示
+  function send(m, cb) {
+    chrome.runtime.sendMessage(m, function (r) {
+      const err = chrome.runtime.lastError;
+      if (err) { if (cb) cb({ ok: false, error: err.message || String(err) }); return; }
+      if (cb) cb(r || {});
+    });
+  }
 
   function esc(s) {
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function line(cls, text) { return '<div class="' + cls + '">' + esc(text) + '</div>'; }
   function ago(ts) {
     if (!ts) return '时间未知';
-    var m = Math.max(0, Math.round((Date.now() - ts) / 60000));
+    const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
     if (m < 1) return '刚刚';
     if (m < 60) return m + ' 分钟前';
-    var h = Math.floor(m / 60);
+    const h = Math.floor(m / 60);
     if (h < 24) return h + ' 小时前';
     return Math.floor(h / 24) + ' 天前';
   }
   function shortUrl(u) {
-    var s = String(u || '');
-    try { var x = new URL(s); return x.host + x.pathname; } catch (e) { return s.slice(0, 70); }
+    const s = String(u || '');
+    try { const x = new URL(s); return x.host + x.pathname; } catch (e) { return s.slice(0, 70); }
   }
 
   function renderDiag(d) {
     if (!d || !d.ok) { $('diag').innerHTML = line('warn', '页面状态读取失败：' + ((d && d.error) || '')); return; }
-    var x = d.data || {}, h = [];
+    const x = d.data || {};
+    // 扩展刚「重新加载」时，已打开的房源页不会自动注入脚本：点开弹窗就自动补加载一次。
+    const shouldFix = !autoFixed && x.siteSupported && !x.scriptAlive && !x.blockedHint;
+    if (shouldFix) { autoFixed = true; autoFixState = 'doing'; }
+
+    const h = [];
     if (x.blockedHint) h.push(line('bad', x.blockedHint));
     if (x.siteSupported) {
       h.push(line('ok', '当前页：' + x.siteName + '房源详情页 · ' + shortUrl(x.tabUrl)));
@@ -57,37 +71,53 @@
     } else {
       h.push(line('warn', '还没有采到任何房源数据'));
     }
+    // F152：补加载状态作为 state 的一部分统一渲染，避免被后续 innerHTML 重设抹掉
+    if (autoFixState === 'doing') h.push(line('warn', '正在自动补加载采集脚本…'));
+    else if (autoFixState === 'failed') h.push(line('bad', '自动补加载失败：' + (autoFixErr || '请刷新房源页')));
     $('diag').innerHTML = h.join('');
 
-    // 扩展刚「重新加载」时，已打开的房源页不会自动注入脚本：
-    // 只要点开这个弹窗就自动补加载并采集，不必让用户手动刷新或点重采。
-    if (!autoFixed && x.siteSupported && !x.scriptAlive && !x.blockedHint) {
-      autoFixed = true;
-      $('diag').innerHTML += line('warn', '正在自动补加载采集脚本…');
+    if (shouldFix) {
       tabUrl(function (u) {
         send({ type: 'HVT_ENSURE', tabUrl: u }, function (r) {
-          setTimeout(function () {
-            if (r && r.ok) load();
-            else $('diag').innerHTML += line('bad', '自动补加载失败：' + ((r && r.error) || '请刷新房源页'));
-          }, 1800);
+          if (!r || !r.ok) {
+            autoFixState = 'failed';
+            autoFixErr = (r && r.error) || '请刷新房源页';
+            renderDiag(d); // 重新渲染显示失败行（autoFixed 已置位，不会再次触发）
+            return;
+          }
+          // F029：依据真实 scriptAlive 信号确认注入，有限重试而非固定 1800ms 盲等
+          waitScriptAlive(u, function (alive) {
+            autoFixState = '';
+            load();
+            if (!alive) say('脚本已补加载，若仍未采集到请刷新房源页');
+          }, 3);
         });
       });
     }
   }
 
+  // F029：轮询 HVT_DIAG 直到脚本真的响应，最多 left 次，避免停在过期状态
+  function waitScriptAlive(u, cb, left) {
+    send({ type: 'HVT_DIAG', tabUrl: u }, function (chk) {
+      if (chk && chk.ok && chk.data && chk.data.scriptAlive) { cb(true); return; }
+      if (left <= 0) { cb(false); return; }
+      setTimeout(function () { waitScriptAlive(u, cb, left - 1); }, 600);
+    });
+  }
+
   // 5 步向导：已完成的打勾，第一个未完成的高亮；第 5 步永远可直接点
   function renderSteps() {
-    var input = String($('base').value || '').trim().replace(/\/+$/, '');
-    var cfg = cfgState || {};
-    var saved = String(cfg.base || '').replace(/\/+$/, '');
-    var inputOk = /^https?:\/\//.test(input);
-    var savedOk = !!saved && saved === input;
-    var done = [inputOk, savedOk, !!(cfg.connOk && savedOk), !!cfg.hasToken, false];
-    var cur = -1;
-    for (var i = 0; i < 4; i++) { if (!done[i]) { cur = i; break; } }
-    var ids = ['s1', 's2', 's3', 's4', 's5'];
-    var flags = ['f1', 'f2', 'f3', 'f4', 'f5'];
-    for (var j = 0; j < 5; j++) {
+    const input = String($('base').value || '').trim().replace(/\/+$/, '');
+    const cfg = cfgState || {};
+    const saved = String(cfg.base || '').replace(/\/+$/, '');
+    const inputOk = /^https?:\/\//.test(input);
+    const savedOk = !!saved && saved === input;
+    const done = [inputOk, savedOk, !!(cfg.connOk && savedOk), !!cfg.hasToken, false];
+    let cur = -1;
+    for (let i = 0; i < 4; i++) { if (!done[i]) { cur = i; break; } }
+    const ids = ['s1', 's2', 's3', 's4', 's5'];
+    const flags = ['f1', 'f2', 'f3', 'f4', 'f5'];
+    for (let j = 0; j < 5; j++) {
       $(ids[j]).className = 'step' + (done[j] ? ' done' : (j === cur ? ' cur' : ''));
       $(flags[j]).textContent = done[j] ? '✓' : '';
     }
@@ -101,9 +131,10 @@
 
   function render(r) {
     if (!r || !r.ok) { say('读取失败：' + ((r && r.error) || '')); return; }
+    if (!r.data) { say('读取失败：数据为空'); return; } // F156
     state = r.data;
-    var s = state.stats || {};
-    var single = !!state.singlePage;
+    const s = state.stats || {};
+    const single = !!state.singlePage;
     $('name').textContent = state.name || '尚未采集到房源';
     $('phase').textContent = !state.hasMain ? '尚未采集到房源' : (single
       ? (state.siteName || '当前站点') + ' · ✓ 单页采集完成（一次采全，无需跳第二页）'
@@ -116,13 +147,13 @@
       (s.coordSource ? ' · 坐标 ' + s.coordSource : '');
     $('fieldsHead').textContent = '字段明细（系统 CSV ' + (s.csvTotal || 0) + ' 列）';
     $('fields').innerHTML = (state.fields || []).map(function (f) {
-      var empty = (f.value === '' || f.value == null);
+      const empty = (f.value === '' || f.value === null || f.value === undefined);
       return '<div class="f' + (empty ? ' empty' : '') + '"><span class="k">' + esc(f.label) +
         '</span><span class="v">' + (empty ? '—' : esc(String(f.value).slice(0, 120))) + '</span></div>';
     }).join('');
     cfgState = r.cfg || {};
     $('base').value = cfgState.base || '';
-    var disabled = !state.hasMain;
+    const disabled = !state.hasMain;
     ['csv', 'push', 'copy'].forEach(function (id) { $(id).disabled = disabled; });
     renderSteps();
   }
@@ -148,7 +179,8 @@
   $('csv').addEventListener('click', function () {
     send({ type: 'HVT_DATA' }, function (r) {
       if (!r.ok) return say(r.error || '生成失败');
-      var prefix = (r.data.site || 'house') + '-' + (r.data.id || r.data.loupanId || 'house');
+      if (!r.data) return say('生成失败：数据为空');
+      const prefix = (r.data.site || 'house') + '-' + (r.data.id || r.data.loupanId || 'house');
       send({ type: 'HVT_DOWNLOAD', csv: r.data.csv, filename: prefix + '-import.csv' },
         function (d) { say(d.ok ? '已下载 CSV，去系统点「导入 CSV」' : ('下载失败：' + (d.error || ''))); });
     });
@@ -161,13 +193,36 @@
   $('copy').addEventListener('click', function () {
     send({ type: 'HVT_DATA' }, function (r) {
       if (!r.ok) return say(r.error || '读取失败');
-      navigator.clipboard.writeText(r.data.jsonText).then(function () { say('JSON 已复制'); }, function () { say('复制失败'); });
+      const text = (r.data && r.data.jsonText) || '';
+      if (!text) return say('没有可复制的数据');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          function () { say('JSON 已复制'); },
+          function () { fallbackCopy(text); }
+        );
+      } else fallbackCopy(text);
     });
   });
 
+  // F028：clipboard API 在弹窗失焦/非安全上下文会 reject，回退到 execCommand
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      say(ok ? 'JSON 已复制' : '复制失败，请从插件面板查看');
+    } catch (e) { say('复制失败，请从插件面板查看'); }
+  }
+
   // 清空并重采：真的触发当前页采集（必要时补注入 content script），然后轮询结果
   $('clear').addEventListener('click', function () {
-    var btn = $('clear');
+    const btn = $('clear');
     btn.disabled = true; say('正在清空并重新采集当前页…');
     tabUrl(function (u) { send({ type: 'HVT_RECOLLECT', tabUrl: u }, onResult); });
     function onResult(r) {
@@ -178,11 +233,28 @@
         return;
       }
       say(r.injected ? '已补加载采集脚本，正在读取页面…' : '正在读取页面…');
-      var n = 0;
-      var t = setInterval(function () {
+      let n = 0, fails = 0;
+      const t = setInterval(function () {
         n++;
         send({ type: 'HVT_STATE' }, function (st) {
-          var got = st && st.ok && st.data && st.data.hasMain;
+          // F153：send() 已把 lastError 映射为 st.error；连续失败时提前终止，避免 interval 空转
+          if (!st || !st.ok) {
+            fails++;
+            if (fails >= 3 || (st && st.error && /context|invalidated|扩展/i.test(st.error))) {
+              clearInterval(t);
+              btn.disabled = false;
+              say('读取状态失败：' + ((st && st.error) || '扩展可能已更新，请刷新页面'));
+              return;
+            }
+            if (n >= 14) {
+              clearInterval(t);
+              btn.disabled = false;
+              say('已触发重采，但还没读到数据；若页面弹出网站验证，请先完成验证再刷新页面');
+              load();
+            }
+            return;
+          }
+          const got = !!(st.data && st.data.hasMain);
           if (got || n >= 14) {
             clearInterval(t);
             btn.disabled = false;
@@ -196,13 +268,16 @@
   });
 
   $('saveCfg').addEventListener('click', function () {
-    var base = String($('base').value || '').trim().replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(base)) return say('请填完整地址，如 http://42.194.228.171:8787');
-    var origin = base + '/*';
+    const base = String($('base').value || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//.test(base)) return say('请填完整地址，如 http://your-host:8787');
+    const origin = base + '/*';
     // 自定义域名需要先申请该 origin 的访问权限（MV3 动态权限）
     chrome.permissions.contains({ origins: [origin] }, function (has) {
+      // F154：回调里必须检查 lastError，否则失败会静默 no-op
+      if (chrome.runtime.lastError) return say('检查权限失败：' + chrome.runtime.lastError.message);
       if (has) return saveBase(base);
       chrome.permissions.request({ origins: [origin] }, function (ok) {
+        if (chrome.runtime.lastError) return say('授权失败：' + chrome.runtime.lastError.message);
         if (!ok) return say('未授权该地址，一键导入可能连不上系统');
         saveBase(base);
       });
@@ -214,9 +289,9 @@
 
   // 测试连接：用当前输入框里的地址（不必先保存），直接探后端接口是否可达
   $('testConn').addEventListener('click', function () {
-    var base = String($('base').value || '').trim().replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(base)) return say('请填完整地址，如 http://42.194.228.171:8787');
-    var btn = $('testConn');
+    const base = String($('base').value || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//.test(base)) return say('请填完整地址，如 http://your-host:8787');
+    const btn = $('testConn');
     btn.disabled = true; say('正在测试连接…');
     send({ type: 'HVT_TEST', base: base }, function (r) {
       btn.disabled = false;
@@ -225,7 +300,7 @@
   });
 
   $('openSys').addEventListener('click', function () {
-    var base = String($('base').value || '').trim().replace(/\/+$/, '');
+    const base = String($('base').value || '').trim().replace(/\/+$/, '');
     send({ type: 'HVT_OPEN_SYSTEM', base: base || undefined }, function () { say('已打开系统页，登录后插件会自动取得登录态'); });
   });
 
