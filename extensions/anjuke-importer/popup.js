@@ -270,6 +270,11 @@
   $('saveCfg').addEventListener('click', function () {
     const base = String($('base').value || '').trim().replace(/\/+$/, '');
     if (!/^https?:\/\//.test(base)) return say('请填完整地址，如 http://your-host:8787');
+    // L-9 补充：非本机/内网地址要显式二次确认，避免被社工诱导把 Bearer 令牌交给攻击者主机。
+    let host = '';
+    try { host = new URL(base).hostname.toLowerCase(); } catch (_) {}
+    const localLike = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])$/i.test(host);
+    if (!localLike && !window.confirm('你填的是外部地址：' + host + '\n插件会把登录令牌发往该地址。确认这是你自己的择隅服务器吗？')) return;
     const origin = base + '/*';
     // 自定义域名需要先申请该 origin 的访问权限（MV3 动态权限）
     chrome.permissions.contains({ origins: [origin] }, function (has) {

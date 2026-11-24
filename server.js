@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn, execFile } = require('child_process');
 const dns = require('dns');
 const net = require('net');
@@ -20,10 +21,24 @@ const { Pool } = require('pg');
 const dbConfig = require('./config/db');
 // 每账号多模型清单：脱敏 / 合并 / 校验 / 选当前（唯一实现，纯函数）
 const aiProviders = require('./ai-providers');
+// 敏感字段落库加密（API Key 不明文进数据库）；主密钥来自 HVT_SECRET 或 data/.secret.key
+const secretBox = require('./secret-box');
 
-// [诊断] 全局崩溃兜底：任意未捕获异常/拒绝都先打印，避免进程直接退出导致所有连接被重置（ERR_CONNECTION_RESET）
-process.on('uncaughtException', (e) => { console.error('[FATAL uncaughtException]', e && e.stack || e); });
-process.on('unhandledRejection', (e) => { console.error('[FATAL unhandledRejection]', e && e.stack || e); });
+// v2.0.0 L-2：异常只打印后继续跑，状态已不可信时可能放大数据不一致。
+// 保留"先打印"的诊断价值，但连续 N 次异常就主动退出，交给 systemd / 部署脚本拉起。
+let fatalCount = 0;
+let fatalTimer = null;
+function onFatal(kind, e) {
+  console.error('[FATAL ' + kind + ']', e && e.stack || e);
+  fatalCount++;
+  if (!fatalTimer) fatalTimer = setTimeout(() => { fatalCount = 0; fatalTimer = null; }, 60 * 1000);
+  if (fatalCount >= 5) {
+    console.error('[FATAL] 1 分钟内 5 次未捕获异常，主动退出由服务管理器拉起');
+    try { process.exit(1); } catch (_) {}
+  }
+}
+process.on('uncaughtException', (e) => onFatal('uncaughtException', e));
+process.on('unhandledRejection', (e) => onFatal('unhandledRejection', e));
 
 const PORT = process.env.PORT || 8787;
 const ROOT = path.join(__dirname, 'public');
@@ -71,8 +86,22 @@ const SECURITY_HEADERS = {
     "worker-src 'self' blob:; " +
     "frame-src 'self'; object-src 'none'; base-uri 'self'"
 };
+// v2.0.0 反代支持：只有确认"请求来自 HTTPS"才加 HSTS。
+// 直连 HTTP 时加 HSTS 会让浏览器把后续访问强制升级到不存在的 HTTPS，直接把站搞挂。
+const REQUIRE_HTTPS = process.env.HVT_REQUIRE_HTTPS === '1';
+function isSecureReq(req) {
+  if (req.socket && req.socket.encrypted) return true;
+  // X-Forwarded-Proto 同样只在可信反代后面才采信（和 clientIp 同一规则）
+  if (!TRUST_PROXY) return false;
+  const remote = (req.socket && req.socket.remoteAddress) || '';
+  if (!ipInNets(remote, TRUST_PROXY_NETS)) return false;
+  const proto = String((req.headers && req.headers['x-forwarded-proto']) || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https';
+}
 function head(res, code, extra, isMedia) {
   const h = Object.assign({}, SECURITY_HEADERS, extra || {});
+  // res._hvtSecure 在请求入口按 req 判定后打上（见 createServer），避免把 req 层层传进 head/sendJSON
+  if (res && res._hvtSecure) h['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   if (isMedia) {
     // 媒体文件：禁止任何脚本/子资源执行，防止上传 SVG/HTML 造成存储型 XSS
     h['Content-Security-Policy'] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'self'";
@@ -80,27 +109,64 @@ function head(res, code, extra, isMedia) {
   res.writeHead(code, h);
 }
 
-// ---------- 登录限流（按客户端 IP，内存计数）----------
-const loginFails = new Map(); // ip -> { count, first }
+// ---------- 登录限流（IP + 邮箱组合桶，内存计数）----------
+// v2.0.0：支持反代。默认 HVT_TRUST_PROXY=0 —— 与旧版完全一致，只认 TCP 对端，XFF 永远不采信。
+// 上 Caddy/Nginx 后设 HVT_TRUST_PROXY=1（层数=1），仅当对端来自可信网段时才从 XFF 右往左取第 n 个。
+// 不配就是直连姿态，避免"我裸奔但 XFF 被伪造绕过限流"。
+const loginFails = new Map(); // bucket -> { count, first }
 const LOGIN_MAX = 10;
 const LOGIN_WINDOW = 15 * 60 * 1000;
-function clientIp(req) {
-  // 服务器实测直连公网、无反向代理：X-Forwarded-For 可任意伪造，绝不采信。
-  // 只取真实 TCP 对端地址；调用方的 .slice(0,64) 等截断处理保持兼容。
-  return (req.socket && req.socket.remoteAddress) || 'unknown';
+const TRUST_PROXY = Math.max(0, Math.min(4, Number(process.env.HVT_TRUST_PROXY || 0) || 0));
+const TRUST_PROXY_NETS = String(process.env.HVT_TRUST_PROXY_NETS || '127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+function ipInNets(ip, nets) {
+  const v = String(ip || '').replace(/^::ffff:/, '');
+  for (const net of nets) {
+    if (net === v) return true;
+    if (net.indexOf('/') > 0) {
+      const [base, bitsStr] = net.split('/');
+      const bits = Number(bitsStr);
+      // 仅支持 IPv4 CIDR；IPv6 请写精确地址（::1）
+      if (!/^\d+\.\d+\.\d+\.\d+$/.test(v) || !/^\d+\.\d+\.\d+\.\d+$/.test(base) || !Number.isFinite(bits)) continue;
+      const toN = (s) => s.split('.').reduce((a, x) => ((a << 8) >>> 0) | (Number(x) & 255), 0) >>> 0;
+      const mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+      if ((toN(v) & mask) === (toN(base) & mask)) return true;
+    }
+  }
+  return false;
 }
-function loginLimited(ip) {
-  const e = loginFails.get(ip);
+function clientIp(req) {
+  const remote = (req.socket && req.socket.remoteAddress) || 'unknown';
+  if (!TRUST_PROXY || !ipInNets(remote, TRUST_PROXY_NETS)) return remote;
+  // 仅在可信代理后面才解析 XFF；从右往左数第 n 个，逐个校验格式，防伪造注入。
+  const xff = String((req.headers && req.headers['x-forwarded-for']) || '');
+  const parts = xff.split(',').map((s) => s.trim()).filter(Boolean).slice(-TRUST_PROXY);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(p) || /^[0-9a-fA-F:]{2,45}$/.test(p)) return p.slice(0, 64);
+  }
+  return remote;
+}
+// 组合桶：同一 IP 对不同邮箱分别计数，避免一个人失败 10 次锁死整个 NAT 后面的所有人；
+// 同时 email 参数缺省时退化为纯 IP 桶（兼容挂在"仅 IP"语义上的限流点）。
+function failBucket(ip, email) {
+  const e = String(email || '').trim().toLowerCase().slice(0, 120);
+  return e ? (String(ip).slice(0, 64) + '|' + e) : String(ip).slice(0, 64);
+}
+function loginLimited(ip, email) {
+  const key = failBucket(ip, email);
+  const e = loginFails.get(key);
   if (!e) return false;
-  if (Date.now() - e.first > LOGIN_WINDOW) { loginFails.delete(ip); return false; }
+  if (Date.now() - e.first > LOGIN_WINDOW) { loginFails.delete(key); return false; }
   return e.count >= LOGIN_MAX;
 }
-function loginFail(ip) {
-  const e = loginFails.get(ip) || { count: 0, first: Date.now() };
+function loginFail(ip, email) {
+  const key = failBucket(ip, email);
+  const e = loginFails.get(key) || { count: 0, first: Date.now() };
   e.count++; e.first = e.first || Date.now();
-  loginFails.set(ip, e);
+  loginFails.set(key, e);
 }
-function loginOk(ip) { loginFails.delete(ip); }
+function loginOk(ip, email) { loginFails.delete(failBucket(ip, email)); }
 
 // ---------- 运行监控：登录日志 / 模型流量 ----------
 // 铁律：日志一律异步 best-effort，写失败/库短暂不可用绝不影响登录与 AI 调用。
@@ -175,11 +241,37 @@ function writeAiLog(seed, extra) {
 }
 // 图形验证码由 /api/auth/captcha 签发、一次性校验；密码登录每次都要过，不再按失败次数渐进触发。
 
-// ---------- 登录 / 注册验证码：表单内联「点选数字」（图形算式 + 服务端一次性校验）----------
-// 选型说明：纯 Node 内置模块即可实现，不需要 canvas / 图片库 / 第三方服务；
-// 挑战由服务端签发，答案只留在服务端内存，前端拿到的 6 个选项不带任何「正确答案」标记。
-const captchaStore = new Map(); // id -> { answer, exp, used }
+// ---------- 登录 / 注册验证码：服务端出图 + 一次性校验 + 算力门槛 + 行为评分 ----------
+// 演进史（别回退）：
+//   v1.12.0 之前：a / b / op 和 6 个候选（含正确答案）明文下发，读一次 JSON 就能算出答案。
+//   v1.12.0：改成服务端渲染 SVG，只下发图片和热区下标。
+//   v1.13.0：SVG 里的算式是 <text> 文本节点，base64 解一下照样读得出来 —— 连视觉能力都不需要。
+//     所以这一版做三件事：
+//       1) 算式与候选数字全部改成 5×7 点阵 path，源码里只剩坐标，读不出任何字符；
+//       2) PoW：提交必须带一次性算力证明，脚本想批量刷要先真跑哈希（抬成本，专治算力型机器人）；
+//       3) 行为评分：真人默认直接放行、不弹验证码，评分低于阈值才要求做图（少打扰真人）。
+// 边界（务必分清）：sig 是浏览器自报的，可以伪造，只用于「少打扰真人」，不是安全边界；
+// 真正不可伪造的只有 PoW。最后一道硬兜底仍是 IP 限流 + 失败计数强制验证码 + 一次性 + 过期。
+const captchaStore = new Map(); // id -> { answerIndex, exp, used }
 const CAPTCHA_TTL = 5 * 60 * 1000;
+const CAPTCHA_W = 300, CAPTCHA_H = 160;
+// 5×7 点阵字模：算式不用 <text> 画，而是把点展开成 path，SVG 源码里读不出题面
+const GLYPHS = {
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  '3': ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  '+': ['00000', '00000', '00100', '11111', '00100', '00000', '00000'],
+  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  '=': ['00000', '01110', '00000', '01110', '00000', '00000', '00000'],
+  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100']
+};
 function cleanCaptchas() {
   const now = Date.now();
   for (const [k, v] of captchaStore) if (v.used || v.exp < now) captchaStore.delete(k);
@@ -188,6 +280,71 @@ function cleanCaptchas() {
     while (captchaStore.size > 500) { const k = it.next().value; if (!k) break; captchaStore.delete(k); }
   }
 }
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; }
+  return a;
+}
+// 把一行文本按 5×7 点阵展开成一条 path（每个亮点一个小方块）。
+// jitter 让点微微错位，既不影响人眼，也让「按完美网格做模板匹配」的脚本失效。
+function glyphPath(text, x0, y0, unit, jitter) {
+  let d = '';
+  let cx = x0;
+  for (const ch of text) {
+    if (ch === ' ') { cx += unit * 3; continue; }
+    const g = GLYPHS[ch] || GLYPHS['?'];
+    const oy = (Math.random() - 0.5) * jitter * 2;
+    for (let r = 0; r < 7; r++) {
+      for (let c = 0; c < 5; c++) {
+        if (g[r][c] !== '1') continue;
+        const px = cx + c * unit + (Math.random() - 0.5) * jitter;
+        const py = y0 + oy + r * unit + (Math.random() - 0.5) * jitter;
+        d += 'M' + px.toFixed(1) + ' ' + py.toFixed(1) + 'h' + unit + 'v' + unit + 'h-' + unit + 'z';
+      }
+    }
+    cx += unit * 6;
+  }
+  return d;
+}
+// 生成本次挑战的 SVG（300×160）。浅蓝渐变底 + 干扰曲线噪点 + 点阵算式 + 点阵候选方块。
+// 注意：全程不出现任何 <text>，题面只以 path 坐标形式存在。
+function captchaSvg(expr, values, positions) {
+  const parts = [];
+  parts.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + CAPTCHA_W + '" height="' + CAPTCHA_H + '" viewBox="0 0 ' + CAPTCHA_W + ' ' + CAPTCHA_H + '">');
+  parts.push('<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+    + '<stop offset="0" stop-color="#eef4ff"/><stop offset="1" stop-color="#f8fbff"/></linearGradient></defs>');
+  parts.push('<rect width="' + CAPTCHA_W + '" height="' + CAPTCHA_H + '" fill="url(#g)"/>');
+  for (let i = 0; i < 7; i++) {
+    const r = () => Math.round(Math.random() * (i % 2 ? CAPTCHA_H : CAPTCHA_W));
+    parts.push('<path d="M' + r() + ' ' + r() + ' C' + r() + ' ' + r() + ', ' + r() + ' ' + r() + ', ' + r() + ' ' + r()
+      + '" fill="none" stroke="rgba(90,130,210,' + (0.10 + Math.random() * 0.14).toFixed(2) + ')" stroke-width="1"/>');
+  }
+  for (let i = 0; i < 46; i++) {
+    parts.push('<circle cx="' + Math.round(Math.random() * CAPTCHA_W) + '" cy="' + Math.round(Math.random() * CAPTCHA_H)
+      + '" r="' + (0.8 + Math.random()).toFixed(1) + '" fill="rgba(70,110,190,' + (0.08 + Math.random() * 0.18).toFixed(2) + ')"/>');
+  }
+  // 算式：点阵 unit=4（字高 28），按实际字宽水平居中，整体轻微旋转，每个字再各自错开半像素
+  const U1 = 4;
+  const w1 = Math.max(0, (expr.length - 1) * U1 * 6 + U1 * 5);
+  const x1 = Math.round((CAPTCHA_W - w1) / 2);
+  parts.push('<g transform="rotate(' + (Math.random() * 2.4 - 1.2).toFixed(2) + ' ' + (CAPTCHA_W / 2) + ' 32)" fill="#23406f">');
+  for (let i = 0; i < expr.length; i++) {
+    if (expr[i] === ' ') continue;
+    parts.push('<path d="' + glyphPath(expr[i], x1 + i * U1 * 6, 18, U1, 0.7) + '"/>');
+  }
+  parts.push('</g>');
+  // 候选数字：点阵 unit=5（单字宽 25、字高 35），3 列 × 2 行，按字数居中（两位数不能压出方块）
+  values.forEach((v, i) => {
+    const p = positions[i];
+    const txt = String(v);
+    const gw = (txt.length - 1) * 30 + 25;
+    parts.push('<g transform="translate(' + p.cx + ' ' + p.cy + ') rotate(' + p.rot + ')">'
+      + '<rect x="-36" y="-22" width="72" height="44" rx="9" fill="rgba(255,255,255,.90)" stroke="rgba(70,110,190,.42)" stroke-width="1.2"/>'
+      + '<path d="' + glyphPath(txt, -gw / 2, -17.5, 5, 0.6) + '" fill="#23406f"/></g>');
+  });
+  parts.push('</svg>');
+  return parts.join('');
+}
 function newCaptcha() {
   cleanCaptchas();
   const op = Math.random() < 0.6 ? '+' : '-';
@@ -195,21 +352,203 @@ function newCaptcha() {
   let b = 1 + Math.floor(Math.random() * 9);   // 1..9
   if (op === '-' && b > a) { const t = a; a = b; b = t; } // 保证结果非负
   const answer = op === '+' ? a + b : a - b;
-  const opts = new Set([answer]);
-  while (opts.size < 6) {
+  const set = new Set([answer]);
+  while (set.size < 6) {
     const v = answer + Math.floor(Math.random() * 13) - 6;
-    if (v >= 0) opts.add(v);
+    if (v >= 0) set.add(v);
   }
-  const options = Array.from(opts).sort(() => Math.random() - 0.5);
+  const values = shuffle(Array.from(set));
+  const answerIndex = values.indexOf(answer);
+  // 与旧版同一套栅格：3 列 × 2 行（方块 64×44，行距 48，互不压边）
+  const positions = values.map((v, i) => ({
+    cx: Math.round(50 + (i % 3) * 100 + (Math.random() * 18 - 9)),
+    cy: Math.round(78 + Math.floor(i / 3) * 48 + (Math.random() * 8 - 4)),
+    rot: Number(((Math.random() - 0.5) * 0.14).toFixed(3))
+  }));
+  const svg = captchaSvg(a + ' ' + op + ' ' + b + ' = ?', values, positions);
   const id = crypto.randomBytes(16).toString('hex');
-  captchaStore.set(id, { answer, exp: Date.now() + CAPTCHA_TTL, used: false });
-  return { id, a, b, op, options };
+  captchaStore.set(id, { answerIndex, exp: Date.now() + CAPTCHA_TTL, used: false });
+  return {
+    id,
+    image: 'data:image/svg+xml;base64,' + Buffer.from(svg, 'utf8').toString('base64'),
+    // 只给坐标，不给数值：前端据此铺点击热区，提交「第几个」
+    hits: positions.map((p) => ({ x: p.cx - 40, y: p.cy - 28, w: 80, h: 56 }))
+  };
 }
-function verifyCaptcha(id, answer) {
+function verifyCaptcha(id, answerIndex) {
   const e = captchaStore.get(String(id || ''));
   if (!e || e.used || e.exp < Date.now()) return false;
   e.used = true; // 一次性：答错也作废，防止对同一挑战枚举 6 个选项
-  return String(answer) === String(e.answer);
+  return Number(answerIndex) === e.answerIndex;
+}
+
+// ---------- PoW：一次性算力证明（唯一不可伪造的门槛）----------
+// 前端在页面加载时就领一个挑战并在后台找出 nonce，让 sha256(salt:nonce) 前 POW_BITS 位为 0。
+// 6.5 万次哈希对桌面约 0.1~0.3 秒、低端手机 1 秒内，用户完全无感；
+// 但脚本若要成批提交，就得真烧同样多的 CPU —— 这是冲「算力型机器人」去的。
+const powStore = new Map(); // id -> { salt, bits, exp, used }
+const POW_TTL = 3 * 60 * 1000;
+const POW_BITS = 16;
+const POW_MAX = 5000;
+function newPow() {
+  const id = crypto.randomBytes(12).toString('hex');
+  const salt = crypto.randomBytes(12).toString('hex');
+  if (powStore.size >= POW_MAX) { // 兜底：被刷也不让内存无上限
+    const it = powStore.keys();
+    while (powStore.size >= POW_MAX) { const k = it.next().value; if (k === undefined) break; powStore.delete(k); }
+  }
+  powStore.set(id, { salt, bits: POW_BITS, exp: Date.now() + POW_TTL, used: false });
+  return { id, salt, bits: POW_BITS };
+}
+function hexHasLeadingZeroBits(hex, bits) {
+  const full = Math.floor(bits / 4);
+  for (let i = 0; i < full; i++) if (hex.charCodeAt(i) !== 48) return false; // 48 = '0'
+  const rem = bits % 4;
+  if (rem) {
+    const v = parseInt(hex[full], 16);
+    if (!Number.isFinite(v) || v >= (1 << (4 - rem))) return false;
+  }
+  return true;
+}
+function verifyPow(pow) {
+  if (!pow || typeof pow !== 'object') return false;
+  const e = powStore.get(String(pow.id || ''));
+  if (!e || e.used || e.exp < Date.now()) return false;
+  const nonce = String(pow.nonce == null ? '' : pow.nonce);
+  if (!/^\d{1,12}$/.test(nonce)) return false;
+  e.used = true; // 一次性：同一个证明不能重复提交
+  const hex = crypto.createHash('sha256').update(e.salt + ':' + nonce).digest('hex');
+  return hexHasLeadingZeroBits(hex, e.bits);
+}
+
+// ---------- M2：服务端签发的设备标识（真正可验证的信任信号）----------
+// sig（鼠标/按键等聚合计数）由前端自报，伪造成本为零，只能当"提示"，不能当裁决。
+// 真正可验证的信号是这里的服务端签名设备 cookie：页面加载领 PoW 时由服务端写入，
+// HttpOnly + HMAC 签名，伪造不了；再结合该设备历史成功登录次数，才决定是否免验证码。
+const DEVICE_COOKIE = 'hvt_did';
+const deviceTrustMap = new Map(); // did -> { count, first }
+const DEVICE_TRUST_MIN = 2;       // 同设备成功登录满 2 次即视为可信
+function deviceToken(id) {
+  const sig = crypto.createHmac('sha256', dbConfig.tokenSecret).update('did:' + id).digest('base64url');
+  return id + '.' + sig;
+}
+function readDevice(req) {
+  const raw = String((req.headers && req.headers.cookie) || '').split(';')
+    .map((p) => p.trim()).find((p) => p.startsWith(DEVICE_COOKIE + '='));
+  if (!raw) return '';
+  const val = raw.slice(DEVICE_COOKIE.length + 1);
+  const dot = val.lastIndexOf('.');
+  if (dot < 1) return '';
+  const id = val.slice(0, dot), sig = val.slice(dot + 1);
+  if (!/^[0-9a-f]{32}$/.test(id)) return '';
+  const want = deviceToken(id).split('.')[1];
+  const a = Buffer.from(sig), b = Buffer.from(want);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return '';
+  return id;
+}
+function issueDevice(req, res) {
+  if (readDevice(req)) return '';
+  const id = crypto.randomBytes(16).toString('hex');
+  const parts = [DEVICE_COOKIE + '=' + deviceToken(id), 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=' + (180 * 24 * 3600)];
+  if (isSecureReq(req)) parts.push('Secure');
+  const prev = res.getHeader && res.getHeader('Set-Cookie');
+  const arr = Array.isArray(prev) ? prev : (prev ? [prev] : []);
+  arr.push(parts.join('; '));
+  if (res.setHeader) res.setHeader('Set-Cookie', arr);
+  return id;
+}
+function deviceTrusted(did) {
+  if (!did) return false;
+  const e = deviceTrustMap.get(did);
+  return !!(e && e.count >= DEVICE_TRUST_MIN && Date.now() - e.first < 180 * 24 * 3600 * 1000);
+}
+function deviceLoginOk(did) {
+  if (!did) return;
+  const e = deviceTrustMap.get(did) || { count: 0, first: Date.now() };
+  e.count++;
+  deviceTrustMap.set(did, e);
+}
+
+// ---------- 行为评分：决定「要不要打扰真人」----------
+// sig 由前端自报（全是聚合计数，不含任何输入内容），因此可被伪造 —— 它的作用只是少弹验证码，
+// 绝不能拿来当安全边界。真正的兜底：服务端签名设备 cookie + 失败计数 + IP 限流。
+const CAPTCHA_TRUST_SCORE = 60;
+const emailFails = new Map(); // email -> { count, first }
+function emailFail(email) {
+  if (!email) return;
+  const e = emailFails.get(email) || { count: 0, first: Date.now() };
+  e.count++; e.first = e.first || Date.now();
+  emailFails.set(email, e);
+}
+function emailFailRecent(email) {
+  if (!email) return 0;
+  const e = emailFails.get(email);
+  if (!e) return 0;
+  if (Date.now() - e.first > LOGIN_WINDOW) { emailFails.delete(email); return 0; }
+  return e.count;
+}
+function riskScore(req, sig) {
+  const s = (sig && typeof sig === 'object') ? sig : {};
+  const ua = String(req.headers['user-agent'] || '');
+  const ref = String(req.headers.referer || '');
+  const host = String(req.headers.host || '');
+  const mm = monInt(s.mm), mc = monInt(s.mc), kd = monInt(s.kd), ff = monInt(s.ff), t = monInt(s.t);
+  const ac = s.ac === 1 || s.ac === true;
+  const touch = s.touch === 1 || s.touch === true;
+  let score = 50;
+  const notes = [];
+
+  // —— 减分项：典型非浏览器/无头特征 ——
+  if (!ua) { score -= 30; notes.push('no-ua'); }
+  else if (/headless|phantom|puppeteer|playwright|selenium|python-requests|python-urllib|curl\/|wget|go-http-client|okhttp|scrapy|httpclient/i.test(ua)) {
+    score -= 55; notes.push('ua-bot');
+  }
+  if (s.webdriver === 1 || s.webdriver === true) { score -= 60; notes.push('webdriver'); }
+  // 软件渲染（无头浏览器常见）单看不够狠也不算准：老电脑、远程桌面、禁用 GPU 的浏览器同样会命中，
+  // 一律重罚会把正常用户恒定挡在验证码前。所以只有「也没输入动作」时才重罚，有真实痕迹就轻罚。
+  if (/swiftshader|llvmpipe|software rasterizer|mesa offscreen/i.test(String(s.gl || ''))) {
+    if (mm + kd >= 10) { score -= 8; notes.push('gl-soft-active'); }
+    else { score -= 35; notes.push('gl-soft'); }
+  }
+  if (!req.headers['accept-language']) { score -= 20; notes.push('no-al'); }
+  if (!ref) { score -= 8; notes.push('no-ref'); }
+  else {
+    let off = false;
+    try { off = new URL(ref).host !== host; } catch { off = true; }
+    if (off) { score -= 15; notes.push('ref-off'); }
+  }
+
+  // —— 加分项：真人操作痕迹 ——
+  if (mm >= 40) { score += 20; notes.push('mm40'); }
+  else if (mm >= 15) { score += 14; notes.push('mm15'); }
+  if (mc >= 4) { score += 10; notes.push('curve'); }
+  if (t >= 3000) { score += 10; notes.push('slow'); }
+  else if (t < 800 && !ac) { score -= 25; notes.push('fast'); } // 自动填充是瞬时的，不按「太快」罚
+  if (kd >= 8) { score += 8; notes.push('kd'); }
+  if (ff >= 1) { score += 5; notes.push('switch'); }
+  // 密码管理器一次性填入整段：真人常用，必须加分，否则会误杀「不碰鼠标直接回车」的用户
+  if (ac) { score += 12; notes.push('autofill'); }
+  if (touch) { score += 4; notes.push('touch'); }
+  else if (mm === 0 && !ac) { score -= 18; notes.push('no-pointer'); }
+
+  return { score: Math.max(0, Math.min(120, score)), notes: notes.join(',') };
+}
+// 是否需要图形验证码：失败计数兜底优先（评分不能绕过），其次才看行为评分。
+function captchaDecision(req, email, sig) {
+  const ip = clientIp(req);
+  // 组合桶后，失败计数按 ip|email 存；同时看纯 IP 桶（历史遗留/其它路径）与当前组合桶
+  const fAll = loginFails.get(String(ip).slice(0, 64));
+  const f = loginFails.get(failBucket(ip, email));
+  if ((fAll && Date.now() - fAll.first <= LOGIN_WINDOW && fAll.count >= 3)
+    || (f && Date.now() - f.first <= LOGIN_WINDOW && f.count >= 3)) return { need: true, why: 'ip-fails' };
+  if (emailFailRecent(email) >= 3) return { need: true, why: 'email-fails' };
+  // M2：只有"服务端签名 cookie + 该设备历史成功登录 ≥2 次"才算可信、可免验证码。
+  // 新设备 / 无 cookie / cookie 伪造 → 一律弹验证码。sig 只作为日志里的辅助信息，
+  // 不再有"免验证码"的裁决权——这是堵住"POST 一份假 sig 就跳过验证"的唯一办法。
+  const did = readDevice(req);
+  const r = riskScore(req, sig);
+  if (deviceTrusted(did)) return { need: false, why: 'trusted-device(score=' + r.score + ')' };
+  return { need: true, why: 'untrusted-device(score=' + r.score + '[' + r.notes + '])' };
 }
 
 // ---------- SSRF 防护（extract 抓链家等外部链接时）----------
@@ -239,6 +578,10 @@ function isPrivateIp(ip) {
 // assertSafeUrl 校验通过后，把该主机名短期「钉」到已校验的 IP。
 // Node 内置 fetch 底层走 net.connect → dns.lookup（回调版），这里让它在 TTL 内复用同一个 IP，
 // 避免「校验时是公网 IP、真正连接时被改解析成内网 IP」的绕过。只影响被显式校验过的主机名。
+// 代价：这是进程级 patch，本进程内所有 dns.lookup 都会先查这张表。命中条件很窄（只认已钉住的
+// 主机名 + 30 秒内），未命中直接走原函数；真出问题时把 dns.lookup 恢复成 origDnsLookup 即可，
+// 所以不做成「只影响某个 fetch 实例」的复杂封装，那需要自己实现 Agent + 连接钩子。
+// 表本身由 sweepMemoryMaps() 定期清理，不会无限增长。
 const DNS_PIN_TTL = 30 * 1000;
 const dnsPins = new Map(); // hostname -> { ip, family, expires }
 const origDnsLookup = dns.lookup;
@@ -352,6 +695,27 @@ const SEED_SAMPLE_DATA = [
     notes: '看房感受：性价比不错、空间大，周边商业齐全；医院配套稍弱。'
   }
 ];
+
+// 历史明文密钥 → 加密（启动时跑一次，幂等）。
+// 之前版本的 API Key 是明文落库的，只有「再次保存设置」才会走到加密分支；
+// 这里补齐，避免老账号的 Key 一直裸着。个人部署的用户量很小，全表扫一遍可以接受。
+async function sealLegacySecrets() {
+  const r = await pool.query('SELECT id, ai_direct_api_key, ai_providers FROM users');
+  let n = 0;
+  for (const row of r.rows) {
+    const key = row.ai_direct_api_key;
+    const list = secretBox.openProviders(row.ai_providers);
+    const needKey = typeof key === 'string' && key !== '' && !secretBox.isSealed(key);
+    const needProv = list.some((p) => p && typeof p.apiKey === 'string' && p.apiKey !== '' && !secretBox.isSealed(p.apiKey));
+    if (!needKey && !needProv) continue;
+    await pool.query(
+      'UPDATE users SET ai_direct_api_key = COALESCE($2, ai_direct_api_key), ai_providers = $3::jsonb WHERE id = $1',
+      [row.id, needKey ? secretBox.seal(key) : null, JSON.stringify(secretBox.sealProviders(list))]
+    );
+    n++;
+  }
+  return n;
+}
 
 async function ensureSchema() {
   await pool.query(SCHEMA);
@@ -542,15 +906,47 @@ const SCRYPT_TAG = 'scrypt';
 const PASSWORD_MIN = 8;     // NIST 800-63B 最低 8 位（原为 6 位）
 const PASSWORD_MAX = 128;
 
-function hashPassword(pw) {
+// M7：scrypt 每次约 128MB，10 个并发就是 1.28GB。加全局闸门，最多 4 个同时跑，
+// 超出排队；队列也设上限 + 5 秒超时，避免被分布式请求堆成内存炸弹。
+const SCRYPT_MAX_PARALLEL = Math.max(1, Math.min(4, Number(process.env.HVT_SCRYPT_PARALLEL || 4) || 4));
+const SCRYPT_QUEUE_MAX = 40;
+const SCRYPT_QUEUE_TIMEOUT = 5000;
+let scryptActive = 0;
+const scryptQueue = [];
+function scryptSlot() {
+  if (scryptActive < SCRYPT_MAX_PARALLEL) { scryptActive++; return Promise.resolve(); }
+  if (scryptQueue.length >= SCRYPT_QUEUE_MAX) return Promise.reject(new Error('系统繁忙，请稍后再试'));
   return new Promise((resolve, reject) => {
-    const salt = crypto.randomBytes(16);
-    crypto.scrypt(pw, salt, 64, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM }, (err, derived) => {
-      if (err) return reject(err);
-      // 带版本前缀 scrypt$N$r$p$salt$hash：以后调强度可按参数验旧密码，平滑升级
-      resolve(`${SCRYPT_TAG}$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${derived.toString('hex')}`);
-    });
+    const item = { resolve, reject, timer: null };
+    item.timer = setTimeout(() => {
+      const i = scryptQueue.indexOf(item);
+      if (i >= 0) scryptQueue.splice(i, 1);
+      reject(new Error('系统繁忙，请稍后再试'));
+    }, SCRYPT_QUEUE_TIMEOUT);
+    scryptQueue.push(item);
   });
+}
+function scryptRelease() {
+  scryptActive--;
+  const next = scryptQueue.shift();
+  if (next) { clearTimeout(next.timer); scryptActive++; next.resolve(); }
+}
+async function scryptLimited(pw, salt, opts) {
+  await scryptSlot();
+  try {
+    return await new Promise((resolve, reject) => {
+      const cb = (err, d) => err ? reject(err) : resolve(d);
+      if (opts) crypto.scrypt(pw, salt, 64, opts, cb);
+      else crypto.scrypt(pw, salt, 64, cb);
+    });
+  } finally { scryptRelease(); }
+}
+
+async function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const derived = await scryptLimited(pw, salt, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM });
+  // 带版本前缀 scrypt$N$r$p$salt$hash：以后调强度可按参数验旧密码，平滑升级
+  return `${SCRYPT_TAG}$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 // 兼容两代格式：新格式带参数；旧格式是 salt:hash（用 Node scrypt 默认参数算的）。
 function parsePasswordHash(stored) {
@@ -567,17 +963,23 @@ function parsePasswordHash(stored) {
   return { saltHex, hashHex, legacy: true, opts: null }; // opts=null → 用默认参数复现旧哈希
 }
 function derivePassword(pw, parsed) {
-  return new Promise((resolve, reject) => {
-    const salt = Buffer.from(parsed.saltHex, 'hex');
-    const cb = (err, d) => err ? reject(err) : resolve(d);
-    if (parsed.opts) crypto.scrypt(pw, salt, 64, parsed.opts, cb);
-    else crypto.scrypt(pw, salt, 64, cb);
-  });
+  const salt = Buffer.from(parsed.saltHex, 'hex');
+  return scryptLimited(pw, salt, parsed.opts);
+}
+// M3：账号不存在时也跑一次同等成本的 scrypt，消除「存在=几百ms / 不存在=几ms」的时间差。
+// 固定盐 + 固定口令，结果丢弃；成本与真实 scrypt 一致（走同一把并发闸门）。
+const DUMMY_SALT = Buffer.from('00000000000000000000000000000000', 'hex');
+// 必须每次真算，不能缓存结果：缓存后第二次起变快，反而给攻击者一个更明显的计时信号。
+async function runDummyScrypt() {
+  try {
+    await scryptLimited('not-a-real-password', DUMMY_SALT,
+      { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM });
+  } catch (_) {}
 }
 // 返回 { ok, needsUpgrade }：旧格式且密码正确时，登录成功后自动重算升级，用户无感
 async function verifyPassword(pw, stored) {
   const parsed = parsePasswordHash(stored);
-  if (!parsed) return { ok: false, needsUpgrade: false };
+  if (!parsed) { await runDummyScrypt(); return { ok: false, needsUpgrade: false }; }
   let derived;
   try { derived = await derivePassword(pw, parsed); }
   catch { return { ok: false, needsUpgrade: false }; }
@@ -601,6 +1003,42 @@ const EMAIL_VERIFICATION = dbConfig.emailVerification;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 function smtpConfigured() { return !!(smtpConfig.host && smtpConfig.user && smtpConfig.pass && smtpConfig.from); }
 function safeAddr(s) { return String(s || '').replace(/[\r\n<>]/g, '').trim(); }
+// L-4：路径参数格式校验。非 uuid 交给 PG 会触发 500 + 类型错误日志；这里直接 404。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(v) { return UUID_RE.test(String(v || '')); }
+
+// ---------- M1：媒体 HMAC 短签名 URL ----------
+// 库里仍存 /media/xxx.jpg（原样），返回给前端时临时拼上 ?e=过期秒&s=签名。
+// 这样图片 <img src> 直接可用，但链接离开用户会话后 1 小时失效，泄露 URL 不等于永久公开。
+const MEDIA_TTL = 60 * 60; // 1 小时
+function mediaSig(pathname, exp) {
+  return crypto.createHmac('sha256', dbConfig.tokenSecret)
+    .update('media|' + pathname + '|' + exp).digest('base64url');
+}
+function signMediaUrl(raw) {
+  const u = String(raw || '');
+  if (!u.startsWith('/media/')) return u;
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_TTL;
+  return u + '?e=' + exp + '&s=' + mediaSig(u.split('?')[0], exp);
+}
+function verifyMediaSig(pathname, expRaw, sig) {
+  const exp = Number(expRaw);
+  if (!Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) return false;
+  const want = mediaSig(pathname, exp);
+  const a = Buffer.from(String(sig || '')), b = Buffer.from(want);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+// 只给 /media/ 开头的字符串签名（房源 media.images/videos、头像等），不动其它字段
+function signRowMedia(row) {
+  if (!row || typeof row !== 'object') return row;
+  const walk = (v) => {
+    if (typeof v === 'string') return signMediaUrl(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = walk(v[k]); return o; }
+    return v;
+  };
+  return walk(row);
+}
 
 function readSmtpReply(sock, state) {
   return new Promise((resolve, reject) => {
@@ -803,10 +1241,13 @@ function sendJSON(res, code, obj, extra) {
 }
 
 // ---------- 一键自升级（管理员专用，异步 + 状态轮询）----------
+// 数据目录（升级包暂存、备份、密钥文件、内嵌库都落在这里）
+const DATA_DIR = (typeof EMBEDDED_DB !== 'undefined' && EMBEDDED_DB && require('./config/db-embedded').embeddedDataDir()) || path.join(__dirname, 'data');
+secretBox.init({ dataDir: DATA_DIR });
 const { createUpgrader } = require('./upgrade');
 const upgrader = createUpgrader({
   appDir: __dirname,
-  dataDir: (typeof EMBEDDED_DB !== 'undefined' && EMBEDDED_DB && require('./config/db-embedded').embeddedDataDir()) || path.join(__dirname, 'data'),
+  dataDir: DATA_DIR,
   serviceName: process.env.HVT_SERVICE_NAME || 'house-view-tracker',
   assertSafeUrl,
   log: console.log
@@ -932,9 +1373,20 @@ async function pumpChatStream(resp, onDelta) {
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
+    let data = '', tooLarge = false;
+    req.on('data', (c) => {
+      if (tooLarge) return;               // 超限后只丢弃，不继续拼字符串
+      data += c;
+      if (data.length > 1e6) {
+        tooLarge = true;
+        data = '';
+        const err = new Error('请求体超过 1MB，请精简后重试');
+        err.status = 413;
+        reject(err);                      // 正常回 413，不再 req.destroy() 让客户端只看到 ECONNRESET
+      }
+    });
     req.on('end', () => {
+      if (tooLarge) return;               // Promise 已 reject
       if (!data) return resolve({});
       try { resolve(JSON.parse(data)); } catch (e) { reject(new Error('请求体不是合法 JSON')); }
     });
@@ -989,16 +1441,43 @@ const CT_EXT = {
   'video/mp4': 'mp4', 'video/webm': 'webm', 'video/ogg': 'ogv',
   'video/quicktime': 'mov', 'video/x-msvideo': 'avi', 'video/x-matroska': 'mkv'
 };
+// M1：按用户分目录 + 配额。老文件仍在 media/ 根目录（兼容），新文件落 media/<uid>/。
+const MEDIA_QUOTA_BYTES = 2 * 1024 * 1024 * 1024; // 单用户 2GB
+function userMediaDir(uid) { return path.join(ROOT, 'media', String(uid).replace(/[^\w-]/g, '')); }
+function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) total += dirSize(p);
+      else { try { total += fs.statSync(p).size; } catch (_) {} }
+    }
+  } catch (_) {}
+  return total;
+}
+const uploadCounts = new Map(); // uid -> { n, first }
+function uploadRateLimited(uid) {
+  const now = Date.now();
+  const e = uploadCounts.get(uid) || { n: 0, first: now };
+  if (now - e.first > 60 * 60 * 1000) { e.n = 0; e.first = now; }
+  e.n++;
+  uploadCounts.set(uid, e);
+  return e.n > 200; // 每小时最多 200 个文件
+}
+
 async function handleUpload(req, res) {
   const uid = await authUid(req);
   if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
+  if (uploadRateLimited(uid)) return sendJSON(res, 429, { error: '上传过于频繁，请 1 小时后再试' });
+  const userDir = userMediaDir(uid);
+  if (dirSize(userDir) >= MEDIA_QUOTA_BYTES) return sendJSON(res, 413, { error: '个人存储空间已满（2GB），请清理旧图片后再上传' });
   const ctype = (req.headers['content-type'] || '').split(';')[0].trim();
-  const mediaDir = path.join(ROOT, 'media');
+  const mediaDir = userDir;
   fs.mkdirSync(mediaDir, { recursive: true });
   const newName = () => (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).slice(2)));
 
-  // [诊断] 上传入口日志：确认走的是新版本 server.js，并打印关键请求头，便于排查 ERR_CONNECTION_RESET
-  console.log('[upload] === entry ===', {
+  // [诊断] 上传入口日志：只在 HVT_DEBUG=1 时打，避免生产日志被每次上传刷屏并泄露落盘路径
+  if (process.env.HVT_DEBUG === '1') console.log('[upload] === entry ===', {
     method: req.method,
     url: (req.url || '').split('?')[0],
     ctype,
@@ -1010,7 +1489,7 @@ async function handleUpload(req, res) {
   // 路径 A：旧方式（头像）传 JSON { dataUrl }，内含 base64 图片
   if (ctype === 'application/json') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const dataUrl = String((body && body.dataUrl) || '');
     const mm = dataUrl.match(/^data:([a-zA-Z0-9/+.+-]+);base64,(.+)$/s);
     if (!mm) return sendJSON(res, 400, { error: '上传内容必须是图片 dataUrl' });
@@ -1021,7 +1500,7 @@ async function handleUpload(req, res) {
     const ext = CT_EXT[mime] || 'png';
     const fname = newName() + '.' + ext;
     fs.writeFileSync(path.join(mediaDir, fname), buf);
-    return sendJSON(res, 200, { data: { url: '/media/' + fname } });
+    return sendJSON(res, 200, { data: { url: '/media/' + String(uid).replace(/[^\w-]/g, '') + '/' + fname } });
   }
 
   // 路径 B：新方式（房源图片/视频）直接传二进制文件，流式落盘，不占内存
@@ -1048,7 +1527,7 @@ async function handleUpload(req, res) {
   const reply = (code, obj) => {
     if (settled) return;
     settled = true;
-    console.log('[upload] <<< reply', code, (obj && obj.error) || '(ok)');
+    if (process.env.HVT_DEBUG === '1') console.log('[upload] <<< reply', code, (obj && obj.error) || '(ok)');
     if (res.headersSent || res.writableEnded || res.destroyed) {
       console.log('[upload] !! socket 已关闭，跳过响应（客户端已断开 / 响应已发）');
       return;
@@ -1085,8 +1564,8 @@ async function handleUpload(req, res) {
     // req 可能因背压已被 pause()，只 destroy ws 会让它永远悬挂；回复后主动销毁请求流
     try { req.destroy(); } catch (_) {}
   });
-  ws.on('finish', () => { if (!aborted) { console.log('[upload] <<< 文件写入完成', { received, chunks, dest }); reply(200, { data: { url: '/media/' + fname } }); } });
-  req.on('end', () => { if (!aborted) { console.log('[upload] <<< 请求体接收完毕', { received, chunks }); ws.end(); } });
+  ws.on('finish', () => { if (!aborted) { if (process.env.HVT_DEBUG === '1') console.log('[upload] <<< 文件写入完成', { received, chunks, dest }); reply(200, { data: { url: '/media/' + String(uid).replace(/[^\w-]/g, '') + '/' + fname } }); } });
+  req.on('end', () => { if (!aborted) { if (process.env.HVT_DEBUG === '1') console.log('[upload] <<< 请求体接收完毕', { received, chunks }); ws.end(); } });
   return;
 }
 
@@ -1220,7 +1699,7 @@ async function resolveAiEndpoint(uid, requestedModel) {
   const r = await pool.query(
     'SELECT ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE id=$1', [uid]
   );
-  const u = r.rows[0];
+  const u = openUserSecrets(r.rows[0]);
   if (!u) return fallback;
   const picked = aiProviders.pickActive(u.ai_providers, u.ai_active_provider, !!u.ai_direct_enabled, u);
   if (!picked.ok) {
@@ -1283,7 +1762,24 @@ async function fetchUrlText(url, _depth) {
       return await fetchUrlText(loc, depth + 1);
     }
     if (!resp.ok) return { ok: false, status: resp.status };
-    const html = await resp.text();
+    // v2.0.0 M6：响应体上限 2MB。原来 resp.text() 无上限，恶意站点几秒内推流几百 MB
+    // 加 gzip 解压放大能直接把进程内存打爆。边读边计数，超了立即 abort。
+    const declared = Number(resp.headers && resp.headers.get('content-length')) || 0;
+    if (declared > 2 * 1024 * 1024) return { ok: false, error: '页面内容过大（超过 2MB）' };
+    if (!resp.body || !resp.body.getReader) return { ok: false, error: '页面没有可读内容' };
+    const reader = resp.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > 2 * 1024 * 1024) { ctrl.abort(); return { ok: false, error: '页面内容过大（超过 2MB）' }; }
+        chunks.push(Buffer.from(value));
+      }
+    } finally { try { reader.releaseLock(); } catch (_) {} }
+    const html = Buffer.concat(chunks).toString('utf8');
     return { ok: true, html };
   } catch (e) {
     return { ok: false, error: e.name === 'AbortError' ? '超时' : e.message };
@@ -1318,7 +1814,18 @@ function parseLlmJson(content) {
 }
 
 // 统一构造返回给前端的安全用户信息（含高德 Key；web key 仅服务端，不返回）
+// 读用户行后统一解密敏感字段（API Key 在库里是密文）。
+// 集中在这一处做，避免以后新增读取路径时忘了解密、把密文当成 Key 发出去。
+function openUserSecrets(r0) {
+  if (!r0) return r0;
+  return Object.assign({}, r0, {
+    ai_direct_api_key: secretBox.open(r0.ai_direct_api_key),
+    ai_providers: secretBox.openProviders(r0.ai_providers)
+  });
+}
+
 function userPublic(r0) {
+  r0 = openUserSecrets(r0);
   return {
     id: r0.id, email: r0.email, name: r0.name, avatar: r0.avatar, demand: r0.demand || null,
     amapJsKey: r0.amap_js_key || '', amapSecurityCode: r0.amap_security_code || '',
@@ -1352,8 +1859,24 @@ async function handleApi(req, res, url) {
     return sendJSON(res, 200, { data: readLocalVersion() }, { 'Cache-Control': 'no-store' });
   }
 
-  // 公开：验证码挑战（不缓存，答案只留在服务端）
+  // 公开：PoW 挑战（一次性）。前端页面加载时就来领一个，后台算好 nonce，提交登录/注册/发码时带上。
+  // 限流按「每分钟 300 个」：正常刷几次够用；放宽到这个量级是因为同一出口 IP（公司 NAT）后面
+  // 可能有多人同时打开页面，卡太紧会集体拿不到挑战。脚本想囤挑战仍会被这个上限拦住。
+  if (pathname === '/api/auth/pow' && method === 'GET') {
+    if (emailRateLimited('pow:' + clientIp(req), 300, 60 * 1000)) {
+      return sendJSON(res, 429, { error: '请求过于频繁，请稍后再试' });
+    }
+    // 领算力挑战时顺手签发设备 cookie（页面加载必走这里）。HttpOnly + HMAC，前端改不了。
+    issueDevice(req, res);
+    return sendJSON(res, 200, { data: newPow() }, { 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+  }
+
+  // 公开：验证码挑战（不缓存；服务端出图，答案只留在服务端）
+  // 加一道签发限流：挑战本身不便宜（每次要渲染 SVG），别让人无限刷。
   if (pathname === '/api/auth/captcha' && method === 'GET') {
+    if (emailRateLimited('captcha:' + clientIp(req), 40, 60 * 1000)) {
+      return sendJSON(res, 429, { error: '请求过于频繁，请稍后再试' });
+    }
     return sendJSON(res, 200, { data: newCaptcha() }, { 'Cache-Control': 'no-store, no-cache, must-revalidate' });
   }
 
@@ -1366,16 +1889,21 @@ async function handleApi(req, res, url) {
     const ip = clientIp(req);
     if (emailRateLimited('ip:' + ip, 8, 60 * 1000)) return sendJSON(res, 429, { error: '请求过于频繁，请 1 分钟后再试' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const purpose = String(body.purpose || '');
     if (!Object.prototype.hasOwnProperty.call(EMAIL_PURPOSE_LABEL, purpose)) {
       return sendJSON(res, 400, { error: '验证码用途不正确' });
     }
     const email = String(body.email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
-    // 用户要求：先过图形验证码，正确了才发邮件
-    if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
-      return sendJSON(res, 400, { error: '验证未通过，请重新完成验证' });
+    // ① 算力证明先过：不跑浏览器的脚本拿不到有效证明
+    if (!verifyPow(body.pow)) {
+      return sendJSON(res, 400, { error: '安全校验已过期，请刷新页面后重试', code: 'POW_INVALID' });
+    }
+    // ② 真人默认直接发码；评分低或近期失败多才要求做图形验证
+    const dec = captchaDecision(req, email, body.sig);
+    if (dec.need && !verifyCaptcha(body.captchaId, body.captchaAnswer)) {
+      return sendJSON(res, 400, { error: '验证未通过，请重新完成验证', code: 'NEED_CAPTCHA' });
     }
     if (emailRateLimited('email:' + email, 5, 60 * 60 * 1000)) {
       return sendJSON(res, 429, { error: '该邮箱获取验证码过于频繁，请 1 小时后再试' });
@@ -1411,10 +1939,10 @@ async function handleApi(req, res, url) {
   // 公开：注册 / 重置密码（图形验证码已在 email-code 阶段消耗，这里校验一次性邮箱验证码）
   if (pathname === '/api/auth/register' && method === 'POST') {
     const ip = clientIp(req);
-    if (loginLimited(ip)) return sendJSON(res, 429, { error: '操作过于频繁，请 15 分钟后再试' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const email = String(body.email || '').trim().toLowerCase();
+    if (loginLimited(ip, email)) return sendJSON(res, 429, { error: '操作过于频繁，请 15 分钟后再试' });
     const password = String(body.password || '');
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
     if (password.length < PASSWORD_MIN) return sendJSON(res, 400, { error: `密码至少 ${PASSWORD_MIN} 位` });
@@ -1423,16 +1951,20 @@ async function handleApi(req, res, url) {
       // 开启：图形验证码已在 email-code 阶段一次性消耗，这里只认邮箱验证码，防止绕过发码直接注册
       const codeOk = await consumeEmailCode(email, 'register', body.emailCode);
       if (!codeOk) {
-        loginFail(ip);
+        loginFail(ip, email);
         writeAuthLog(req, { email, action: 'register', ok: false, reason: 'email_code_invalid' });
         return sendJSON(res, 400, { error: '邮箱验证码不正确或已过期，请重新获取' });
       }
     } else {
-      // 关闭：不校验邮箱（开箱即用），但必须过一次性图形验证码，防止机器人批量刷号
-      if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
-        loginFail(ip);
-        writeAuthLog(req, { email, action: 'register', ok: false, reason: 'captcha_invalid' });
-        return sendJSON(res, 400, { error: '验证未通过，请重新完成验证' });
+      // 关闭：不校验邮箱（开箱即用），但要么有算力证明 + 评分达标，要么过一次性图形验证码
+      if (!verifyPow(body.pow)) {
+        return sendJSON(res, 400, { error: '安全校验已过期，请刷新页面后重试', code: 'POW_INVALID' });
+      }
+      const dec = captchaDecision(req, email, body.sig);
+      if (dec.need && !verifyCaptcha(body.captchaId, body.captchaAnswer)) {
+        loginFail(ip, email);
+        writeAuthLog(req, { email, action: 'register', ok: false, reason: 'captcha_required:' + dec.why });
+        return sendJSON(res, 400, { error: '验证未通过，请重新完成验证', code: 'NEED_CAPTCHA' });
       }
     }
     const hash = await hashPassword(password);
@@ -1443,11 +1975,12 @@ async function handleApi(req, res, url) {
         [email, hash, name, null]
       );
       const r0 = r.rows[0];
-      loginOk(ip);
+      loginOk(ip, email);
+      deviceLoginOk(readDevice(req));
       writeAuthLog(req, { uid: r0.id, email, action: 'register', ok: true });
       return sendJSON(res, 201, { data: { token: signToken(r0.id, r0.token_version || 0), user: userPublic(r0) } });
     } catch (e) {
-      loginFail(ip);
+      loginFail(ip, email);
       writeAuthLog(req, { email, action: 'register', ok: false, reason: 'register_failed' });
       // 邮箱已被占用（唯一约束冲突）→ 明确告知，别把原因错误归到「邮箱格式」上。
       // 注意：注册接口本身即可用于探测邮箱是否注册，模糊化在这里几乎不产生额外防护，
@@ -1458,29 +1991,39 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // 密码登录：每次都必须先过一次性图形验证码（前端点「登录」先弹窗，答对后才提交）。
-  // 后端强制校验：不带/过期/答错一律拒绝，且不计入密码失败限流（避免用无效挑战把 IP 锁死）。
+  // 密码登录：先过一次性 PoW 算力证明；图形验证码只在评分低/近期失败多时才强制。
+  // 不带或无效的挑战一律拒绝，且不计入密码失败限流（避免用无效挑战把 IP 锁死）。
   if (pathname === '/api/auth/login' && method === 'POST') {
     const ip = clientIp(req);
-    if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
-    if (!verifyCaptcha(body.captchaId, body.captchaAnswer)) {
-      writeAuthLog(req, { email: String(body.email || '').trim().toLowerCase(), action: 'login_pwd', ok: false, reason: 'captcha_invalid' });
-      return sendJSON(res, 400, { error: '验证未通过，请重新完成验证' });
-    }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const email = String(body.email || '').trim().toLowerCase();
+    if (loginLimited(ip, email)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
+    if (!verifyPow(body.pow)) {
+      writeAuthLog(req, { email, action: 'login_pwd', ok: false, reason: 'pow_invalid' });
+      return sendJSON(res, 400, { error: '安全校验已过期，请刷新页面后重试', code: 'POW_INVALID' });
+    }
+    const dec = captchaDecision(req, email, body.sig);
+    // 排查风控误杀用：设 HVT_DEBUG_RISK=1 启动就能看到每次判定的分数与命中项（生产默认不打印）
+    if (process.env.HVT_DEBUG_RISK === '1') console.log('[RISK][login] ' + dec.why + ' email=' + email);
+    if (dec.need && !verifyCaptcha(body.captchaId, body.captchaAnswer)) {
+      writeAuthLog(req, { email, action: 'login_pwd', ok: false, reason: 'captcha_required:' + dec.why });
+      return sendJSON(res, 400, { error: '验证未通过，请重新完成验证', code: 'NEED_CAPTCHA' });
+    }
     const password = String(body.password || '');
     const r = await pool.query('SELECT id, email, password_hash, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE email=$1', [email]);
     const vr = r.rows.length
       ? await verifyPassword(password, r.rows[0].password_hash)
-      : { ok: false, needsUpgrade: false };
+      : await (async () => { await runDummyScrypt(); return { ok: false, needsUpgrade: false }; })();
     if (!vr.ok) {
-      loginFail(ip);
+      loginFail(ip, email);
+      emailFail(email); // 同一邮箱连续失败：下次强制走图形验证，评分不能绕过
       writeAuthLog(req, { uid: r.rows[0] && r.rows[0].id, email, action: 'login_pwd', ok: false, reason: 'bad_credentials' });
       return sendJSON(res, 401, { error: '邮箱或密码不正确' });
     }
-    loginOk(ip);
+    loginOk(ip, email);
+    deviceLoginOk(readDevice(req));
+    emailFails.delete(email);
     const r0 = r.rows[0];
     // 旧格式哈希在登录成功后自动升级成 OWASP 参数，用户无感、无需批量迁移
     if (vr.needsUpgrade) {
@@ -1501,24 +2044,25 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 403, { error: '系统未启用验证码登录，请使用密码登录' });
     }
     const ip = clientIp(req);
-    if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const email = String(body.email || '').trim().toLowerCase();
+    if (loginLimited(ip, email)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
     const codeOk = await consumeEmailCode(email, 'code-login', body.emailCode);
     if (!codeOk) {
-      loginFail(ip);
+      loginFail(ip, email);
       writeAuthLog(req, { email, action: 'login_code', ok: false, reason: 'email_code_invalid' });
       return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' });
     }
     const r = await pool.query('SELECT id, email, name, avatar, demand, token_version, amap_js_key, amap_security_code, map_enabled, ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE email=$1', [email]);
     if (!r.rows.length) {
-      loginFail(ip);
+      loginFail(ip, email);
       writeAuthLog(req, { email, action: 'login_code', ok: false, reason: 'account_not_found' });
       return sendJSON(res, 400, { error: '验证码不正确或已过期，请重新获取' });
     }
-    loginOk(ip);
+    loginOk(ip, email);
+    deviceLoginOk(readDevice(req));
     const r0 = r.rows[0];
     writeAuthLog(req, { uid: r0.id, email, action: 'login_code', ok: true });
     return sendJSON(res, 200, { data: { token: signToken(r0.id, r0.token_version || 0), user: userPublic(r0) } });
@@ -1531,10 +2075,10 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 403, { error: '系统未启用邮箱验证，无法通过邮件找回密码，请联系管理员' });
     }
     const ip = clientIp(req);
-    if (loginLimited(ip)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const email = String(body.email || '').trim().toLowerCase();
+    if (loginLimited(ip, email)) return sendJSON(res, 429, { error: '尝试次数过多，请 15 分钟后再试' });
     const newPassword = String(body.newPassword || '');
     if (!EMAIL_RE.test(email)) return sendJSON(res, 400, { error: '请输入有效的邮箱地址' });
     if (newPassword.length < PASSWORD_MIN || newPassword.length > PASSWORD_MAX) {
@@ -1542,7 +2086,7 @@ async function handleApi(req, res, url) {
     }
     const codeOk = await consumeEmailCode(email, 'reset', body.emailCode);
     if (!codeOk) {
-      loginFail(ip);
+      loginFail(ip, email);
       return sendJSON(res, 400, { error: '邮箱验证码不正确或已过期，请重新获取' });
     }
     const hash = await hashPassword(newPassword);
@@ -1551,7 +2095,8 @@ async function handleApi(req, res, url) {
       [hash, email]
     );
     if (!r.rows.length) return sendJSON(res, 404, { error: '该邮箱尚未注册' });
-    loginOk(ip);
+    loginOk(ip, email);
+    deviceLoginOk(readDevice(req));
     writeAuthLog(req, { uid: r.rows[0].id, email, action: 'reset_password', ok: true });
     return sendJSON(res, 200, { data: { ok: true } });
   }
@@ -1568,7 +2113,7 @@ async function handleApi(req, res, url) {
     const uid = await authUid(req);
     if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const name = body.name != null ? String(body.name).trim().slice(0, 40) : null;
     const avatar = body.avatar != null ? String(body.avatar).slice(0, 2000) : null;
     // 购房需求（JSONB）：传入则整体覆盖，未传保持不变
@@ -1584,7 +2129,12 @@ async function handleApi(req, res, url) {
     const aiDirectEnabled = (body.aiDirectEnabled === true || body.aiDirectEnabled === 'true') ? true
       : (body.aiDirectEnabled === false || body.aiDirectEnabled === 'false') ? false : null;
     const aiDirectBaseUrl = body.aiDirectBaseUrl != null ? String(body.aiDirectBaseUrl).trim().slice(0, 300) : null;
-    const aiDirectApiKey = body.aiDirectApiKey != null ? String(body.aiDirectApiKey).trim().slice(0, 300) : null;
+    // 落库前加密：库里存密文，读的时候由 openUserSecrets() 统一解密。
+    // 语义不变：null = 保留旧值，空串 = 清空。
+    const aiDirectApiKeyRaw = body.aiDirectApiKey != null ? String(body.aiDirectApiKey).trim().slice(0, 300) : null;
+    let aiDirectApiKey = null;
+    try { aiDirectApiKey = aiDirectApiKeyRaw == null ? null : secretBox.seal(aiDirectApiKeyRaw); }
+    catch (e) { return sendJSON(res, 500, { error: e.message }); }
     const aiDirectModel = body.aiDirectModel != null ? String(body.aiDirectModel).trim().slice(0, 120) : null;
     if (aiDirectBaseUrl) {
       try { await assertSafeUrl(aiDirectBaseUrl); }
@@ -1605,8 +2155,11 @@ async function handleApi(req, res, url) {
           if (bu) await assertSafeUrl(bu);
         }
         const oldRow = await pool.query('SELECT ai_providers FROM users WHERE id=$1', [uid]);
-        const merged = aiProviders.mergeProviders(oldRow.rows[0] && oldRow.rows[0].ai_providers, aiProvidersIn);
-        aiProvidersJson = JSON.stringify(merged);
+        // 旧值在库里是密文，合并前先解密（mergeProviders 会把「留空」的 Key 从旧值继承过来，
+        // 若直接拿密文去合并，再封一次就成了密文套密文）
+        const oldProviders = secretBox.openProviders(oldRow.rows[0] && oldRow.rows[0].ai_providers);
+        const merged = aiProviders.mergeProviders(oldProviders, aiProvidersIn);
+        aiProvidersJson = JSON.stringify(secretBox.sealProviders(merged));
       } catch (e) {
         return sendJSON(res, 400, { error: '模型配置不合法：' + e.message });
       }
@@ -1632,12 +2185,15 @@ async function handleApi(req, res, url) {
   const uid = await authUid(req);
   if (!uid) return sendJSON(res, 401, { error: '未登录或登录已过期' });
 
-  // ---------- 一键自升级：仅管理员（.env 的 ADMIN_EMAILS）----------
-  // GET  status  → 读状态给前端轮询；POST start → 触发升级（需 confirm）；POST rollback → 回滚。
-  // 非管理员一律 403；升级是高危操作，误触代价大，因此 command 必须显式确认。
+  // ---------- 一键自升级：升级动作仅管理员（.env 的 ADMIN_EMAILS），检查更新人人可用 ----------
+  // GET check → 只读版本文件，任何登录账号都能看有没有新版；GET status → 轮询进度；
+  // POST start / rollback → 真正动服务器文件，仅管理员且必须显式确认（confirm）。
   if (pathname.startsWith('/api/upgrade/')) {
     const admin = await isAdmin(uid);
-    if (!admin) return sendJSON(res, 403, { error: '仅管理员可执行升级操作' });
+    // 「检查更新」只是读远程版本文件、不碰服务器文件，普通账号也允许用（只看有没有新版）；
+    // 其余 status/start/rollback 都涉及升级动作，一律仅管理员。
+    const readOnlyCheck = pathname === '/api/upgrade/check' && method === 'GET';
+    if (!admin && !readOnlyCheck) return sendJSON(res, 403, { error: '仅管理员可执行升级操作' });
 
     if (pathname === '/api/upgrade/status' && method === 'GET') {
       const st = upgrader.readState();
@@ -1656,11 +2212,13 @@ async function handleApi(req, res, url) {
         const cur = localVersion();
         return sendJSON(res, 200, { data: {
           current: cur, latest: remote.version, hasNew: upgrader.cmpVersion(remote.version, cur) > 0,
+          title: remote.title || '', items: Array.isArray(remote.items) ? remote.items.slice(0, 10) : [],
           notes: remote.notes || '', date: remote.date || '', package: remote.package || '',
           // v1.8.3：标记这份信息是「实时取到的」还是「本地缓存兜底」，前端据此提示可能不是最新
           cached: !!remote.__cached, cachedAt: Number(remote.__cachedAt) || 0,
           source: remote.__source || '', tried: Number(remote.__tried) || 1,
-          admin: true, platform: process.platform
+          // 前端据此决定显示「一键升级」按钮，还是只显示检查结果（普通账号）
+          admin, platform: process.platform
         } }, { 'Cache-Control': 'no-store' });
       } catch (e) {
         // 把底层原因（超时 / ENETUNREACH / 证书等）显式带出来：否则前端只能显示笼统的 502，
@@ -1675,7 +2233,7 @@ async function handleApi(req, res, url) {
 
     if (pathname === '/api/upgrade/start' && method === 'POST') {
       let body;
-      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
       if (body.confirm !== 'UPGRADE') return sendJSON(res, 400, { error: '缺少升级确认，操作已取消' });
       try {
         const remote = await fetchRemoteVersion();
@@ -1689,7 +2247,7 @@ async function handleApi(req, res, url) {
 
     if (pathname === '/api/upgrade/rollback' && method === 'POST') {
       let body;
-      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
       if (body.confirm !== 'ROLLBACK') return sendJSON(res, 400, { error: '缺少回滚确认，操作已取消' });
       try { await upgrader.rollback(); return sendJSON(res, 200, { data: { ok: true } }); }
       catch (e) { return sendJSON(res, 500, { error: e.message }); }
@@ -1799,7 +2357,7 @@ async function handleApi(req, res, url) {
   // 修改密码（P0）：校验原密码 → 换新哈希 → 自增 token_version 踢掉其它设备
   if (pathname === '/api/auth/change-password' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const oldPw = String(body.oldPassword || ''), newPw = String(body.newPassword || '');
     if (newPw.length < PASSWORD_MIN || newPw.length > PASSWORD_MAX) {
       return sendJSON(res, 400, { error: `新密码需 ${PASSWORD_MIN}–${PASSWORD_MAX} 位` });
@@ -1823,13 +2381,20 @@ async function handleApi(req, res, url) {
     const r = await pool.query(
       'SELECT * FROM properties WHERE owner_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC', [uid]
     );
-    return sendJSON(res, 200, { data: r.rows });
+    // L-5：可选 limit/offset（默认不截断，兼容现有前端）；前端日后可按页取，避免上千条 + base64 图片撑爆响应。
+    const lim = Math.max(0, Math.min(5000, Number(url.searchParams.get('limit')) || 0));
+    const off = Math.max(0, Number(url.searchParams.get('offset')) || 0);
+    const rows = lim ? r.rows.slice(off, off + lim) : r.rows;
+    return sendJSON(res, 200, { data: rows.map(signRowMedia) }, {
+      'X-Total-Count': String(r.rows.length),
+      'Access-Control-Expose-Headers': 'X-Total-Count'
+    });
   }
 
   // 新建
   if (pathname === '/api/properties' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const row = body || {};
     const inserted = await insertProperty(uid, row);
     return sendJSON(res, 201, { data: inserted });
@@ -1844,7 +2409,7 @@ async function handleApi(req, res, url) {
   // 批量导入（CSV 导入等，接收房源对象数组）
   if (pathname === '/api/properties/batch' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const rows = Array.isArray(body) ? body : (body && body.rows) || [];
     // 分块并发插入：避免逐条 await 的 N 次串行往返，也避免一次性 Promise.all 压垮连接池
     const inserted = [];
@@ -1861,7 +2426,7 @@ async function handleApi(req, res, url) {
     const r = await pool.query(
       'SELECT * FROM properties WHERE owner_id=$1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC', [uid]
     );
-    return sendJSON(res, 200, { data: r.rows });
+    return sendJSON(res, 200, { data: r.rows.map(signRowMedia) });
   }
 
   // 恢复已删除（最近删除可恢复）
@@ -1917,7 +2482,7 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { data: r.rows });
     }
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const content = String(body.content || '').trim();
     if (!content) return sendJSON(res, 400, { error: '跟进内容不能为空' });
     const r = await pool.query(
@@ -1975,7 +2540,7 @@ async function handleApi(req, res, url) {
   });
   if (pathname === '/api/community-deals' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const f = dealFields(body);
     if (!f.community) return sendJSON(res, 400, { error: '小区名称不能为空' });
     const r = await pool.query(
@@ -1992,7 +2557,7 @@ async function handleApi(req, res, url) {
   // 插件批量推送（去重：同小区 + 同户型 + 同面积 + 同成交日期视为同一条）
   if (pathname === '/api/community-deals/batch' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const rows = Array.isArray(body) ? body : (Array.isArray(body.rows) ? body.rows : []);
     let added = 0, skipped = 0;
     const valid = [];
@@ -2037,7 +2602,7 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { data: { ok: true } });
     }
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const f = dealFields(body);
     if (!f.community) return sendJSON(res, 400, { error: '小区名称不能为空' });
     const r = await pool.query(
@@ -2067,7 +2632,7 @@ async function handleApi(req, res, url) {
     const uid = await authUid(req);
     if (!uid) return sendJSON(res, 401, { error: '未登录' });
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const kind = String((body && body.kind) || 'file');
     // 新建笔记（纯文字，不落地文件）
     if (kind === 'note') {
@@ -2091,19 +2656,24 @@ async function handleApi(req, res, url) {
     // 安全：禁止上传 SVG（可在同源内联执行 JS，造成存储型 XSS），与房源图片上传口径一致
     if (mime === 'image/svg+xml') return sendJSON(res, 400, { error: '不支持 SVG 格式（存在 XSS 安全风险）' });
     const buf = Buffer.from(mm[2], 'base64');
-    if (buf.length > 30 * 1024 * 1024) return sendJSON(res, 400, { error: '单个文件不能超过 30MB' });
+    // 与前端口径一致：readBody 上限约 1MB 字符，base64 膨胀后原始文件上限约 700KB。
+    // 原来写的 30MB 是死代码（永远先被 readBody 拦掉），改成真正会触发的活校验。
+    if (buf.length > 700 * 1024) return sendJSON(res, 413, { error: '单个文件不能超过 700KB（服务端单次请求限制）' });
     const title = String(body.title || '').trim() || (body.filename ? String(body.filename) : '未命名资料');
     const origName = String(body.filename || 'file').replace(/[^\w.\-一-龥]/g, '_').slice(0, 120);
     const ext = (path.extname(origName) || '').toLowerCase() || ('.' + (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, ''));
     const fname = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).slice(2))) + ext;
-    const dir = path.join(__dirname, 'uploads', 'knowledge', uid);
+    // L-8：库里只存相对路径（uploads/knowledge/<uid>/<fname>），读取时基于项目根解析并校验前缀。
+    const KB_REL = path.join('uploads', 'knowledge', String(uid).replace(/[^\w-]/g, ''));
+    const dir = path.join(__dirname, KB_REL);
     fs.mkdirSync(dir, { recursive: true });
     const stored = path.join(dir, fname);
+    const storedRel = path.join(KB_REL, fname);
     fs.writeFileSync(stored, buf);
     try {
       const r = await pool.query(
         "INSERT INTO knowledge_files (owner_id, title, filename, stored_path, mime, size, kind) VALUES ($1,$2,$3,$4,$5,$6, 'file') RETURNING id, title, filename, mime, size, kind, created_at",
-        [uid, title, origName, stored, mime, buf.length]
+        [uid, title, origName, storedRel, mime, buf.length]
       );
       return sendJSON(res, 201, { data: r.rows[0] });
     } catch (e) {
@@ -2114,25 +2684,41 @@ async function handleApi(req, res, url) {
   }
   const km = pathname.match(/^\/api\/knowledge\/([^/]+)\/file$/);
   if (km && method === 'GET') {
+    if (!isUuid(km[1])) return sendJSON(res, 404, { error: '未找到该资料' });
     const uid = await authUid(req);
     if (!uid) return sendJSON(res, 401, { error: '未登录' });
     const r = await pool.query('SELECT * FROM knowledge_files WHERE id=$1 AND owner_id=$2', [km[1], uid]);
     if (!r.rows.length) return sendJSON(res, 404, { error: '未找到该资料或无权限' });
     const row = r.rows[0];
-    if (!fs.existsSync(row.stored_path)) return sendJSON(res, 404, { error: '文件已丢失' });
+    // L-8：stored_path 必须是 uploads/knowledge/ 下的相对路径，不接受绝对路径 / 目录穿越。
+    // 库被误恢复或 SQL 权限过大时，这条能挡住"把 stored_path 改成 /etc/passwd"。
+    const rawPath = String(row.stored_path || '');
+    const KB_ROOT = path.resolve(__dirname, 'uploads', 'knowledge') + path.sep;
+    let resolved;
+    if (path.isAbsolute(rawPath)) {
+      // 兼容历史数据：只接受仍在 uploads/knowledge/ 内的旧绝对路径
+      resolved = path.resolve(rawPath);
+      if (!resolved.startsWith(KB_ROOT)) return sendJSON(res, 404, { error: '文件路径无效' });
+    } else {
+      resolved = path.resolve(__dirname, rawPath);
+      if (!resolved.startsWith(KB_ROOT)) return sendJSON(res, 404, { error: '文件路径无效' });
+    }
+    if (!fs.existsSync(resolved)) return sendJSON(res, 404, { error: '文件已丢失' });
+    let realSize = row.size;
+    try { realSize = fs.statSync(resolved).size; } catch (_) {}
     const ext = path.extname(row.filename).toLowerCase();
     let ctype = MIME[ext] || row.mime || 'application/octet-stream';
     // 安全：即便库内残留 SVG，也强制以附件下载 + 非脚本 MIME，杜绝同源内联执行造成存储型 XSS
     if (ctype === 'image/svg+xml') ctype = 'application/octet-stream';
     const fileHeaders = Object.assign({}, SECURITY_HEADERS, {
       'Content-Type': ctype,
-      'Content-Length': row.size,
+      'Content-Length': realSize,
       'Content-Disposition': 'attachment; filename="' + encodeURIComponent(row.filename) + '"'
     });
     res.writeHead(200, fileHeaders);
-    const rs = fs.createReadStream(row.stored_path);
+    const rs = fs.createReadStream(resolved);
     rs.on('error', (e) => {
-      console.error('[knowledge] 读取文件失败：' + row.stored_path, e && e.message);
+      console.error('[knowledge] 读取文件失败：' + resolved, e && e.message);
       if (!res.headersSent) {
         head(res, 500, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('读取文件失败');
@@ -2145,14 +2731,21 @@ async function handleApi(req, res, url) {
   }
   const kd = pathname.match(/^\/api\/knowledge\/([^/]+)$/);
   if (kd && method === 'DELETE') {
+    if (!isUuid(kd[1])) return sendJSON(res, 404, { error: '未找到该资料' });
     const uid = await authUid(req);
     if (!uid) return sendJSON(res, 401, { error: '未登录' });
     const r = await pool.query('SELECT * FROM knowledge_files WHERE id=$1 AND owner_id=$2', [kd[1], uid]);
     if (!r.rows.length) return sendJSON(res, 404, { error: '未找到该资料或无权限' });
     // 先删库记录再删物理文件：若 unlink 失败，至少不会留下「库里已无、磁盘残留」无法再清理的孤儿文件
     await pool.query('DELETE FROM knowledge_files WHERE id=$1 AND owner_id=$2', [kd[1], uid]);
-    try { fs.unlinkSync(r.rows[0].stored_path); }
-    catch (e) { console.warn('[knowledge] 库记录已删，但磁盘文件删除失败（' + r.rows[0].stored_path + '）：' + e.message); }
+    // L-8：删除前同样校验路径边界，防止库记录被改成系统文件后借删除接口任意删文件
+    const delRaw = String(r.rows[0].stored_path || '');
+    const delAbs = path.isAbsolute(delRaw) ? path.resolve(delRaw) : path.resolve(__dirname, delRaw);
+    const KB_ROOT2 = path.resolve(__dirname, 'uploads', 'knowledge') + path.sep;
+    if (delAbs.startsWith(KB_ROOT2)) {
+      try { fs.unlinkSync(delAbs); }
+      catch (e) { console.warn('[knowledge] 库记录已删，但磁盘文件删除失败（' + delAbs + '）：' + e.message); }
+    }
     return sendJSON(res, 200, { data: { ok: true } });
   }
 
@@ -2163,11 +2756,11 @@ async function handleApi(req, res, url) {
     if (method === 'GET') {
       const r = await pool.query('SELECT * FROM properties WHERE id=$1 AND owner_id=$2', [id, uid]);
       if (!r.rows.length) return sendJSON(res, 404, { error: '未找到该房源或无权限' });
-      return sendJSON(res, 200, { data: r.rows[0] });
+      return sendJSON(res, 200, { data: signRowMedia(r.rows[0]) });
     }
     if (method === 'PUT') {
       let body;
-      try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
       const row = body || {};
       const r = await pool.query(
         `UPDATE properties SET
@@ -2195,7 +2788,7 @@ async function handleApi(req, res, url) {
     const r = await pool.query(
       'SELECT ai_direct_enabled, ai_direct_base_url, ai_direct_api_key, ai_direct_model, ai_providers, ai_active_provider FROM users WHERE id=$1', [uid]
     );
-    const u = r.rows[0] || {};
+    const u = openUserSecrets(r.rows[0]) || {};
     const directOn = !!u.ai_direct_enabled;
     const picked = aiProviders.pickActive(u.ai_providers, u.ai_active_provider, directOn, u);
     const usingDirect = directOn && picked.ok && !!picked.provider;
@@ -2231,7 +2824,7 @@ async function handleApi(req, res, url) {
   // 没传 Key 且给了 pid 时，复用库里已保存的那把（弹窗里改地址不必重填 Key）。
   if (pathname === '/api/ai/test-provider' && method === 'POST') {
     let body;
-    try { body = await readBodyLimit(req, 64 * 1024, 256 * 1024); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBodyLimit(req, 64 * 1024, 256 * 1024); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const baseUrl = String(body.baseUrl || '').trim().replace(/\/+$/, '');
     const model = String(body.model || '').trim().slice(0, 120);
     const pid = String(body.pid || '').trim().slice(0, 60);
@@ -2240,8 +2833,18 @@ async function handleApi(req, res, url) {
     if (!/^https?:\/\//i.test(baseUrl)) return sendJSON(res, 400, { error: '接口地址要以 http:// 或 https:// 开头' });
     if (!apiKey && pid) {
       const rr = await pool.query('SELECT ai_providers FROM users WHERE id=$1', [uid]);
-      const saved = aiProviders.asList((rr.rows[0] || {}).ai_providers).find((x) => x && x.id === pid);
-      if (saved && typeof saved.apiKey === 'string') apiKey = saved.apiKey.trim();
+      // 库里存的是密文，这里必须先解密再用（否则会把 "enc:v1:…" 当 Key 发出去）
+      const savedList = secretBox.openProviders((rr.rows[0] || {}).ai_providers);
+      const saved = savedList.find((x) => x && x.id === pid);
+      if (saved && typeof saved.apiKey === 'string') {
+        // L-3：复用已存 Key 时，地址必须就是这个厂商保存的地址。
+        // 否则攻击者拿到会话后，把 baseUrl 填成自己的服务器，就能让服务端把解密后的 Key 送出去。
+        const savedBase = String(saved.baseUrl || '').trim().replace(/\/+$/, '');
+        if (savedBase && savedBase !== baseUrl) {
+          return sendJSON(res, 400, { error: '复用已保存的 Key 时，接口地址必须与该厂商保存的地址一致' });
+        }
+        apiKey = saved.apiKey.trim();
+      }
     }
     if (!apiKey) return sendJSON(res, 400, { error: '还没填 API Key（已保存过的 Key 会自动复用）' });
     try { await assertSafeUrl(baseUrl); }
@@ -2342,7 +2945,7 @@ async function handleApi(req, res, url) {
 
   if (pathname === '/api/ai/chat' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const messages = body.messages;
     let model = String(body.model || 'auto');
     const temperature = typeof body.temperature === 'number' ? body.temperature : 0.7;
@@ -2411,7 +3014,7 @@ async function handleApi(req, res, url) {
   }
   if (pathname === '/api/ai/extract' && method === 'POST') {
     let body;
-    try { body = await readBody(req); } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    try { body = await readBody(req); } catch (e) { return sendJSON(res, e.status || 400, { error: e.message }); }
     const text = body.text != null ? String(body.text) : '';
     const url = body.url != null ? String(body.url).trim() : '';
     const images = Array.isArray(body.images) ? body.images.filter(x => typeof x === 'string' && x.length) : [];
@@ -2517,39 +3120,182 @@ const MIME = {
 // 允许被同源 iframe 承载的页面（其余一律 X-Frame-Options: DENY）
 const FRAMEABLE_PAGES = new Set(['/floorplan.html', '/floorplan-designer.html']);
 
+// ---------- 静态资源：压缩 + 协商缓存（v1.10.4）----------
+// 背景：服务器直连公网、前面没有 nginx，压缩和缓存头只能本进程给。
+// floorplan-designer.html 单文件 2.16MB（整个 3D 引擎内联在一个 <script> 里），
+// 原来明文 + 无 ETag + no-cache → 公网实测每次进页面都要 6.5~8.2 秒重下全量，
+// 浏览器连 304 都问不出来。这里补三件事：
+//   1) 按 Accept-Encoding 压缩（br 优先，gzip 兜底），2.16MB → 733KB(gzip) / 更小(br)
+//   2) ETag + Last-Modified：文件没变就回 304，零字节
+//   3) 带 ?v= 版本戳的 js/css 视为不可变，一年长缓存（改版必然换 URL）
+const COMPRESSIBLE_EXT = new Set(['.html', '.htm', '.js', '.mjs', '.css', '.json', '.svg', '.txt', '.xml', '.map', '.webmanifest']);
+const COMPRESS_MIN_BYTES = 1024;                 // 低于 1KB 压了可能反而更大（gzip 头开销）
+const COMPRESS_CACHE_MAX_ENTRIES = 64;           // 压缩结果缓存条数（按插入顺序 FIFO 淘汰）
+const COMPRESS_CACHE_MIN_BYTES = 32 * 1024;      // 大文件才进缓存，小文件现压更快
+const compressCache = new Map();                 // "path|mtime|size|enc" → Promise<Buffer>
+
+// 压缩只对文本类做；图片/字体/媒体这些本来已压缩，再压是白烧 CPU。
+function pickEncoding(req) {
+  const ae = String(req.headers['accept-encoding'] || '').toLowerCase();
+  // 客户端的 q=0 是明确拒绝，必须尊重，否则会回一份它解不开的编码
+  if (/\bbr\b/.test(ae) && !/\bbr\s*;\s*q\s*=\s*0(?:[;,]|$)/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae) && !/\bgzip\s*;\s*q\s*=\s*0(?:[;,]|$)/.test(ae)) return 'gzip';
+  return null;
+}
+
+function compressBuffer(buf, enc) {
+  return new Promise((resolve, reject) => {
+    let opts;
+    if (enc === 'br') {
+      opts = { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length } };
+    } else {
+      opts = { level: 6 };
+    }
+    (enc === 'br' ? zlib.brotliCompress : zlib.gzip)(buf, opts, (err, out) => (err ? reject(err) : resolve(out)));
+  });
+}
+
+// 缓存的是 Promise 而非 Buffer：同一文件被并发请求时只会压一次，其余等同一个结果。
+function compressCached(cacheKey, buf, enc) {
+  const hit = compressCache.get(cacheKey);
+  if (hit) return hit;
+  const p = compressBuffer(buf, enc);
+  if (buf.length >= COMPRESS_CACHE_MIN_BYTES) {
+    compressCache.set(cacheKey, p);
+    if (compressCache.size > COMPRESS_CACHE_MAX_ENTRIES) {
+      const oldest = compressCache.keys().next().value;
+      if (oldest !== undefined) compressCache.delete(oldest);
+    }
+    // 压缩失败别把坏结果永久留在缓存里
+    p.catch(() => compressCache.delete(cacheKey));
+  }
+  return p;
+}
+
 function serveStatic(req, res, url) {
   let urlPath;
   try { urlPath = decodeURIComponent(url.pathname.split('?')[0]); }
   catch (_) { head(res, 400, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Bad Request'); return; }
   if (urlPath === '/') urlPath = '/index.html';
+  // M1：/media/ 必须带有效短签名（领了房源数据才会拿到），裸链一律 403
+  if (urlPath.startsWith('/media/')) {
+    const e = url.searchParams.get('e'), s = url.searchParams.get('s');
+    if (!verifyMediaSig(urlPath, e, s)) {
+      head(res, 403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('Forbidden');
+      return;
+    }
+  }
   const filePath = path.normalize(path.join(ROOT, urlPath));
   // 用 ROOT + 分隔符比较，避免 /app/public-evil 这类同前缀兄弟目录绕过
   const rootPrefix = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
   if (filePath !== ROOT && !filePath.startsWith(rootPrefix)) { head(res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Forbidden'); return; }
-  fs.readFile(filePath, (err, data) => {
-    if (err) { head(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found'); return; }
+
+  // 先 stat 拿 size/mtime：ETag 和 Last-Modified 都靠它，顺便挡掉目录请求
+  fs.stat(filePath, (statErr, st) => {
+    if (statErr || !st.isFile()) { head(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found'); return; }
     const ext = path.extname(filePath).toLowerCase();
     const isMedia = filePath.startsWith(path.join(ROOT, 'media'));
-    // 禁用启发式缓存：本地开发频繁改版，必须每次拿到最新文件（no-cache 仍允许 304 协商）
-    const staticHeaders = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' };
+    // 弱 ETag：压缩前后内容语义一致，用同一枚即可，省掉哈希整个 2MB 文件的 CPU
+    const etag = 'W/"' + st.size.toString(16) + '-' + Math.floor(st.mtimeMs).toString(16) + '"';
+    const lastModified = new Date(st.mtimeMs).toUTCString();
+    // 带版本戳的 js/css 内容不可变 → 一年长缓存；HTML 和媒体仍走 no-cache（改了要立刻生效）
+    const versioned = /[?&]v=[^&]+/.test(url.search || '');
+    const longCache = versioned && (ext === '.js' || ext === '.mjs' || ext === '.css');
+    const cacheControl = longCache ? 'public, max-age=31536000, immutable' : 'no-cache';
+
+    // 可压缩类型与是否真压：304 分支也要用到（Vary 必须和 200 一致，否则缓存键会飘）
+    const compressible = !isMedia && COMPRESSIBLE_EXT.has(ext) && st.size >= COMPRESS_MIN_BYTES;
+    const enc = compressible ? pickEncoding(req) : null;
+
+    // 协商缓存：If-None-Match 优先于 If-Modified-Since（HTTP 规范如此，浏览器两者都发）
+    let notModified = false;
+    const inm = req.headers['if-none-match'];
+    const ims = req.headers['if-modified-since'];
+    if (inm) {
+      const stripWeak = (t) => t.trim().replace(/^W\//, '');
+      notModified = String(inm).split(',').some((t) => stripWeak(t) === stripWeak(etag));
+    } else if (ims) {
+      const since = Date.parse(ims);
+      // Last-Modified 只到秒，取整秒比较，避免同秒内改动被误判成没变
+      notModified = Number.isFinite(since) && Math.floor(st.mtimeMs / 1000) * 1000 <= since;
+    }
+    if (notModified) {
+      const h304 = { 'ETag': etag, 'Last-Modified': lastModified, 'Cache-Control': cacheControl };
+      // 关键：304 也会被浏览器拿去做 X-Frame-Options 判定。若这里漏掉同源放宽，
+      // iframe 第二次加载（走 304）就会被 DENY 拦掉——200 能开、刷新就白屏，极难查。
+      if (FRAMEABLE_PAGES.has(urlPath)) h304['X-Frame-Options'] = 'SAMEORIGIN';
+      if (compressible) h304['Vary'] = 'Accept-Encoding';
+      head(res, 304, h304);
+      res.end();
+      return;
+    }
+
+    const headers = {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Cache-Control': cacheControl,
+      'ETag': etag,
+      'Last-Modified': lastModified,
+    };
     // 装修设计：这两个页面由主界面用同源 iframe 承载，必须单独放宽 X-Frame-Options，
     // 否则会被全局 DENY 拦掉（v1.10.0 默认内嵌高级设计器后就是这么炸的）。
     // 基础模式 = floorplan.html；高级模式 = floorplan-designer.html。其它页面维持 DENY。
-    if (FRAMEABLE_PAGES.has(urlPath)) staticHeaders['X-Frame-Options'] = 'SAMEORIGIN';
-    head(res, 200, staticHeaders, isMedia);
-    res.end(data);
+    if (FRAMEABLE_PAGES.has(urlPath)) headers['X-Frame-Options'] = 'SAMEORIGIN';
+    // 只要是可压缩类型就声明 Vary：压缩/明文两种形态共用一个 URL，代理别串着发
+    if (compressible) headers['Vary'] = 'Accept-Encoding';
+
+    fs.readFile(filePath, (err, data) => {
+      if (err) { head(res, 404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('404 Not Found'); return; }
+      // 读盘期间文件被替换（升级解包）：这一份字节已不可信，让浏览器下次重取
+      if (data.length !== st.size) { headers['Cache-Control'] = 'no-cache'; }
+      if (!enc) {
+        headers['Content-Length'] = data.length;
+        head(res, 200, headers, isMedia);
+        res.end(data);
+        return;
+      }
+      compressCached(filePath + '|' + st.mtimeMs + '|' + data.length + '|' + enc, data, enc)
+        .then((out) => {
+          headers['Content-Encoding'] = enc;
+          headers['Content-Length'] = out.length;
+          head(res, 200, headers, isMedia);
+          res.end(out);
+        })
+        .catch((e) => {
+          // 压缩失败不影响可用性：退回明文，只是慢一点
+          console.error('[static] 压缩失败，降级明文：' + filePath + ' → ' + (e && e.message));
+          headers['Content-Length'] = data.length;
+          head(res, 200, headers, isMedia);
+          res.end(data);
+        });
+    });
   });
 }
 
 // ---------- 启动 ----------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  // HTTPS 强制开关：只在真正用 Caddy/Nginx 反代并配好 X-Forwarded-Proto 后才打开。
+  // 默认 0，保证现有 IP+8787 直连不受影响。
+  const secure = isSecureReq(req);
+  res._hvtSecure = secure;
+  if (REQUIRE_HTTPS && !secure) {
+    // API 返回 JSON 错误；页面请求 426 让浏览器提示切 HTTPS（不用 301，避免 curl/代理死循环）
+    if (url.pathname.startsWith('/api/')) {
+      res.writeHead(426, { 'Content-Type': 'application/json; charset=utf-8', 'Upgrade': 'HTTPS' });
+      res.end(JSON.stringify({ error: '请通过 HTTPS 访问本站' }));
+    } else {
+      res.writeHead(426, { 'Content-Type': 'text/plain; charset=utf-8', 'Upgrade': 'HTTPS' });
+      res.end('请通过 HTTPS 访问本站');
+    }
+    return;
+  }
   if (url.pathname.startsWith('/api/')) {
     if (url.pathname === '/api/upload' && req.method === 'POST') {
-      console.log('[upload] >>> 路由命中 /api/upload (POST)');
+      if (process.env.HVT_DEBUG === '1') console.log('[upload] >>> 路由命中 /api/upload (POST)');
       try { await handleUpload(req, res); } catch (e) {
         console.error('upload error', e);
-        if (!res.headersSent) sendJSON(res, 500, { error: '上传失败：' + e.message });
+        if (!res.headersSent) { console.error('[upload] 上传失败：', e); sendJSON(res, 500, { error: '上传失败，请查看服务端日志' }); }
       }
       return;
     }
@@ -2566,6 +3312,41 @@ const server = http.createServer(async (req, res) => {
 
 // 优雅关闭：SIGTERM/SIGINT 时先停止接收新连接，等 in-flight 初始化/查询结算后
 // 关闭连接池（内嵌 PGlite 亦实现了 end()），避免未落盘的写入丢失或实例泄漏。
+// ---------- 内存表定期清扫 ----------
+// loginFails / emailRate / dnsPins 都是「按 IP / 邮箱 / 主机名」的 Map，以前只增不减：
+// 公网机器被扫描器刷几个月，这三张表会一直涨（只有 captchaStore 有上限）。
+// 这里按各自的过期时间清一遍，再给个条数上限兜底（Map 保持插入序，超出就淘汰最早的）。
+const MEM_SWEEP_MS = 5 * 60 * 1000;
+function capMap(map, max) {
+  while (map.size > max) {
+    const k = map.keys().next().value;
+    if (k === undefined) break;
+    map.delete(k);
+  }
+}
+function sweepMemoryMaps() {
+  const t = Date.now();
+  for (const [k, v] of loginFails) if (!v || t - (v.first || 0) > LOGIN_WINDOW) loginFails.delete(k);
+  // emailRate 各调用点窗口不同（1 分钟 ~ 1 小时），统一按最长的 1 小时兜底，
+  // 取小了会把仍在窗口内的计数提前清掉，等于放宽限流。
+  for (const [k, v] of emailRate) if (!v || t - (v.first || 0) > 60 * 60 * 1000) emailRate.delete(k);
+  for (const [k, v] of dnsPins) if (!v || !(v.expires > t)) dnsPins.delete(k);
+  // PoW / 邮箱失败表同样要清：公网被扫描器刷时这两张表会一直涨
+  for (const [k, v] of powStore) if (!v || !(v.exp > t) || v.used) powStore.delete(k);
+  for (const [k, v] of emailFails) if (!v || t - (v.first || 0) > LOGIN_WINDOW) emailFails.delete(k);
+  for (const [k, v] of deviceTrustMap) if (!v || t - (v.first || 0) > 180 * 24 * 3600 * 1000) deviceTrustMap.delete(k);
+  for (const [k, v] of uploadCounts) if (!v || t - (v.first || 0) > 60 * 60 * 1000) uploadCounts.delete(k);
+  capMap(loginFails, 5000);
+  capMap(emailRate, 5000);
+  capMap(dnsPins, 500);
+  capMap(powStore, POW_MAX);
+  capMap(emailFails, 5000);
+  capMap(deviceTrustMap, 5000);
+  capMap(uploadCounts, 5000);
+}
+const memSweepTimer = setInterval(sweepMemoryMaps, MEM_SWEEP_MS);
+if (memSweepTimer.unref) memSweepTimer.unref(); // 别因为这个定时器挡住进程退出
+
 let shuttingDown = false;
 function gracefulShutdown(sig) {
   if (shuttingDown) return;
@@ -2603,6 +3384,13 @@ async function start() {
   try {
     await ensureSchema();
     console.log('✅ 数据表已就绪（users / properties）');
+    // 老数据：以前 Key 是明文存的，这里顺手加密一次（幂等，已加密的跳过，失败不影响启动）
+    try {
+      const n = await sealLegacySecrets();
+      if (n) console.log('✅ 已加密历史明文密钥 ' + n + ' 条');
+    } catch (e) {
+      console.warn('⚠️ 历史密钥加密跳过：' + e.message);
+    }
   } catch (e) {
     console.error('⚠️ 建表失败：', e.message);
     if (!EMBEDDED_DB && !dbConfig.password) console.error('   （同上：PGPASSWORD 未配置，数据库不可用，所有接口都会失败）');
@@ -2611,8 +3399,15 @@ async function start() {
   // 一键升级：若上次状态停在 restarting，说明服务已成功拉起，补写 done 供前端轮询读取。
   try { upgrader.onBoot(); } catch (e) { console.warn('[upgrade] 启动状态收尾失败：', e.message); }
 
-  server.listen(PORT, () => {
-    console.log(`择隅已启动： http://127.0.0.1:${PORT}/  （浏览器打开 http://服务器IP:${PORT}/）`);
+  // HVT_BIND：上反代后设 127.0.0.1，让 8787 只对本机开放（云安全组再关掉公网 8787 入口）。
+  // 默认 0.0.0.0 —— 保持现有 IP 直连用法不变。
+  const BIND = process.env.HVT_BIND || '0.0.0.0';
+  server.listen(PORT, BIND, () => {
+    const schema = REQUIRE_HTTPS ? 'https' : 'http';
+    const host = process.env.HVT_PUBLIC_HOST || ('服务器IP:' + PORT);
+    console.log(`择隅已启动： ${schema}://${host}/  （监听 ${BIND}:${PORT}）`);
+    if (REQUIRE_HTTPS) console.log('🔒 已启用 HTTPS 强制：请用反向代理（Caddy/Nginx）转发，并透传 X-Forwarded-Proto');
+    else console.log('⚠️ 当前为 HTTP 直连模式（令牌明文传输）。上域名后建议设 HVT_REQUIRE_HTTPS=1 并配反代。');
     console.log(EMBEDDED_DB
       ? `（数据保存在目录 ${require('./config/db-embedded').embeddedDataDir()}，备份时整个目录拷走即可）`
       : `（数据保存在本地 PostgreSQL：house_view 库，不联网、不上传）`);

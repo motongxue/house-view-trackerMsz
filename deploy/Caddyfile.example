@@ -1,0 +1,37 @@
+# 择隅 v2.0.0 · Caddy 反向代理示例（域名 + 自动 HTTPS）
+#
+# 用法：
+#   1. 域名备案通过后，把 A 记录 @ / www 指到服务器公网 IP
+#   2. 云安全组：放行 80/443，关闭 8787 的公网入口
+#   3. 本机 .env 增加：
+#        HVT_BIND=127.0.0.1
+#        HVT_TRUST_PROXY=1
+#        HVT_REQUIRE_HTTPS=1
+#        HVT_PUBLIC_HOST=你的域名
+#     然后重启择隅（改了 server.js/.env 必须重启）
+#   4. 把本文件复制为 /etc/caddy/Caddyfile，替换下面的域名，systemctl reload caddy
+#
+# Caddy 会自动申请并续期 Let's Encrypt 证书，无需手动操作。
+
+your-domain.example.com, www.your-domain.example.com {
+    # Caddy 自动 HTTPS（HTTP-01 验证需要 80 端口可达）
+    encode zstd gzip
+
+    # 关键：透传真实客户端 IP 与协议。择隅只在 HVT_TRUST_PROXY=1 时才采信这两个头，
+    # 且只接受来自本机（127.0.0.1）的代理，伪造无效。
+    reverse_proxy 127.0.0.1:8787 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For   {remote_host}
+        header_up Host              {host}
+    }
+
+    # 媒体文件（房源照片/视频）允许较大响应，别让反代层截断
+    request_body {
+        max_size 0
+    }
+
+    log {
+        output file /var/log/caddy/zeyu-access.log
+        format console
+    }
+}

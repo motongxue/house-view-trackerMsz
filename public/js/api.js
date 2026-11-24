@@ -71,25 +71,29 @@ const Api = (function () {
     put: (p, b) => request('PUT', p, b),
     del: (p) => request('DELETE', p),
     captcha: () => request('GET', '/api/auth/captcha'),
+    // PoW 挑战：页面加载就领一个，BotGuard 在后台算好 nonce，提交时带上（一次性）
+    pow: () => request('GET', '/api/auth/pow'),
     // 非敏感登录配置：邮箱验证码是否启用（决定登录页显示哪套表单）
     authConfig: () => request('GET', '/api/auth/config'),
-    // 图形验证码正确后，由服务端发送邮箱验证码（注册 / 登录 / 找回密码共用）
-    emailCode: (email, purpose, cap) => request('POST', '/api/auth/email-code', {
-      email, purpose, captchaId: cap && cap.id, captchaAnswer: cap && cap.answer
+    // g = BotGuard.attach() 的结果 { pow, sig }：算力证明 + 行为信号。
+    // 缺它就带不到证明，服务端会回 POW_INVALID，所以三个提交口都必须传。
+    emailCode: (email, purpose, cap, g) => request('POST', '/api/auth/email-code', {
+      email, purpose, captchaId: cap && cap.id, captchaAnswer: cap && cap.answer,
+      pow: g && g.pow, sig: g && g.sig
     }),
     // 邮箱验证开启时传 emailCode；关闭时传图形验证码 cap（后端二选一校验）
-    register: (email, password, emailCode, cap) => request('POST', '/api/auth/register', {
+    register: (email, password, emailCode, cap, g) => request('POST', '/api/auth/register', {
       email, password, emailCode,
-      captchaId: cap && cap.id, captchaAnswer: cap && cap.answer
+      captchaId: cap && cap.id, captchaAnswer: cap && cap.answer,
+      pow: g && g.pow, sig: g && g.sig
     }),
-    // 密码登录：每次都必须携带一次性图形验证码结果（前端先弹窗，答对后才提交）；
-    // 缺 cap 直接本地拒绝，不发裸登录请求
-    login: (email, password, cap) => {
-      if (!cap || !cap.id) return Promise.reject(new Error('请先完成安全验证'));
-      return request('POST', '/api/auth/login', {
-        email, password, captchaId: cap.id, captchaAnswer: cap.answer
-      });
-    },
+    // 密码登录：先带 PoW 直接提交，服务端按行为评分决定要不要图形验证码；
+    // 回 NEED_CAPTCHA 才弹窗，答完再带 cap 提交第二遍
+    login: (email, password, cap, g) => request('POST', '/api/auth/login', {
+      email, password,
+      captchaId: cap && cap.id, captchaAnswer: cap && cap.answer,
+      pow: g && g.pow, sig: g && g.sig
+    }),
     // 验证码登录：邮箱 + 一次性邮箱码，免密
     loginByCode: (email, emailCode) => request('POST', '/api/auth/login-code', { email, emailCode }),
     resetPassword: (email, emailCode, newPassword) => request('POST', '/api/auth/reset-password', { email, emailCode, newPassword }),

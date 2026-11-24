@@ -4,6 +4,15 @@
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // M4：外链协议白名单。esc() 只做 HTML 转义，不约束 scheme，
+  // javascript:/vbscript:/data: 进了 href 就是存储型 XSS（CSV 导入 / 扩展抓取都能带进来）。
+  function safeHref(raw) {
+    const u = String(raw == null ? '' : raw).trim();
+    if (/^(https?:|mailto:)/i.test(u)) return u;
+    if (/^\/media\//i.test(u)) return u;      // 本站上传的媒体路径
+    if (/^\/[^\/\\]/i.test(u)) return u;      // 本站相对路径（不以 // 开头，避免协议相对外链）
+    return '#';
+  }
   // 面包屑已按需求整体移除（页面标题与返回按钮不受影响），保留空函数兼容旧调用点
   function crumb() { return ''; }
   // 预制封面：未上传图片时使用的建筑剪影占位图（8 种配色轮换）
@@ -1077,7 +1086,7 @@
       f.src = fpAdvancedUrl();
     } else {
       f.title = '装修设计 · 3D 户型';
-      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v1.10.2';
+      f.src = './floorplan.html?layout=' + encodeURIComponent(fpUpLayout) + '&v=v2.0.1';
     }
     stage.appendChild(f);
   }
@@ -1257,7 +1266,7 @@
   // 高级设计器地址：设计器只读同源 localStorage['hvt-design-spec'] / ?spec=，
   // propId 仅作排障标记保留；需要（重新）生成方案时从设计器里 AI 面板的「上传户型图」入口进识别页。
   function fpAdvancedUrl() {
-    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v1.10.2';
+    return './floorplan-designer.html?propId=' + encodeURIComponent(fpUpPropId || '') + '&v=v2.0.1';
   }
 
   // 统一入口：离开本视图时 renderView 会调 destroyFloorplan()（同时清理同源同步监听）
@@ -1269,6 +1278,26 @@
   let fpPropId = null;
   let fpDirty = false;
   let fpReadyHandler = null;
+
+  // 自研 3D 引擎按需加载（v1.10.4）：
+  // 默认走上游 iframe 版（floorplan.html），自研引擎只是 FP_USE_UPSTREAM=false 时的回退分支，
+  // 所以没必要在首页就预载它 —— 那会连带把 1.26MB 的 three.module.js 拖下来。
+  // 这里用绝对路径动态 import（classic script 里 import() 的 base 容易踩坑，别用相对路径）；
+  // 模块顶层会挂 window.Floorplan3D 并派发 floorplan:ready，fpMount() 里的一次性监听正好接住。
+  let fp3dLoading = null;
+  function ensureFloorplan3D() {
+    if (window.Floorplan3D) return Promise.resolve(window.Floorplan3D);
+    if (!fp3dLoading) {
+      fp3dLoading = import('/js/floorplan-3d.js?v=v2.0.1')
+        .then((m) => (m && m.default) || window.Floorplan3D || null)
+        .catch((e) => {
+          fp3dLoading = null;   // 允许下次重试
+          console.error('[floorplan3d] 加载失败', e);
+          return null;
+        });
+    }
+    return fp3dLoading;
+  }
 
   function destroyFloorplan() {
     if (fpReadyHandler) {
@@ -1378,6 +1407,7 @@
     };
     fpBar();
     fpMount();
+    ensureFloorplan3D();  // 到位后模块会派发 floorplan:ready，fpMount 里的一次性监听接着 boot
   }
 
   // ---------- 列表 ----------
@@ -2885,8 +2915,8 @@
     const files = Array.from(fileList || []);
     if (!files.length) return;
     // 后端 /api/knowledge 用 readBody（约 1e6 字符上限）接收 base64 dataUrl，
-    // 原始文件超过约 700KB 就会被断连；这里按真实上限提前拦截并明确提示，
-    // 不再让用户等到 ECONNRESET 才知道失败。（后端仅接受 dataUrl，纯前端无法改走二进制流）
+    // 原始文件超过约 700KB 会被服务端以 413 拒绝；这里按同一上限提前拦截并明确提示。
+    // （后端仅接受 dataUrl，纯前端无法改走二进制流）
     const MAX = 700 * 1024;
     const tasks = files.map(async (f) => {
       if (f.size > MAX) { toast('「' + f.name + '」超过 700KB（服务端单次请求限制），已跳过'); return; }
@@ -4079,7 +4109,9 @@
   // 每个可预览项是一个 .media-item 按钮，data-media-src/type 供查看器收集；非 URL 的文本路径
   // 仍渲染成外链。查看器用 document 事件委托绑定，详情页动态重绘后依然有效。
   function isMediaUrl(s) {
-    return /^https?:\/\//i.test(s) || /^\/media\//.test(s) || /^data:/i.test(s);
+    // data: 已从媒体识别中移除：data:image/svg+xml 在部分浏览器仍是 XSS 面，
+    // 且本站上传的图片一律走 /media/ 路径，不需要 data URI。
+    return /^https?:\/\//i.test(s) || /^\/media\//i.test(s);
   }
   /* 只有真正的视频文件才能交给 <video>。安居客 / 贝壳给的都是「播放页 HTML 链接」或封面图，
    * 塞进 <video src> 只会显示一块灰色（用户反馈「感觉是张图片」），必须改成外链卡片。 */
@@ -4129,7 +4161,7 @@
         + `<span class="media-badge">${esc(label)}</span></button>`;
     }
     if (!isMediaUrl(u)) {
-      return `<a class="media-link" href="${esc(u)}" target="_blank" rel="noopener">${type === 'video' ? '🎬' : '📷'} ${esc(u)}</a>`;
+      return `<a class="media-link" href="${esc(safeHref(u))}" target="_blank" rel="noopener noreferrer">${type === 'video' ? '🎬' : '📷'} ${esc(u)}</a>`;
     }
     return `<button type="button" class="media-item" data-media-src="${esc(u)}" data-media-type="${type === 'video' ? 'video' : 'image'}" title="点击放大">`
       + (type === 'video'
@@ -5241,47 +5273,20 @@
     }
     return 0;
   }
-  // 检查更新：读公开 version.json；管理员且后端支持时显示「一键升级」，否则退回复制命令。
+  // 检查更新：任何登录账号都能点，但只有管理员会出现「一键升级」按钮——
+  // 升级是高危动作，普通账号这里只负责「看有没有新版」，其余一律交给管理员。
   // 一键升级：后端异步下载/备份/覆盖/重启，本页轮询状态；重启瞬间连接会断，自动重试。
   let upgradePoll = null;
   function stopUpgradePoll() { if (upgradePoll) { clearInterval(upgradePoll); upgradePoll = null; } }
-  function manualUpgradeCard(info, latest, reason) {
-    const pkg = String(info.package || 'house-view-tracker-linux-x64_' + latest.replace(/^v/i, '') + '.tar.gz');
-    const dl = String((info.downloadUrls && info.downloadUrls[0]) || info.downloadUrl || '');
-    const dir = String(info.installDir || '/data/house-view-tracker');
-    const lines = [
-      'sudo systemctl stop house-view-tracker',
-      'cd ' + dir.replace(/\/+$/, ''),
-      'cp -r data ../house-view-tracker-data-backup-$(date +%Y%m%d)',
-      dl ? ('curl -fL -o /tmp/' + pkg + ' "' + dl + '"') : ('# 请先把升级包 ' + pkg + ' 上传到服务器 /tmp/'),
-      'tar -xzf /tmp/' + pkg + ' --strip-components=1',
-      'sudo systemctl restart house-view-tracker'
-    ];
-    const cmd = lines.join('\n');
-    const notes = String(info.notes || '').trim();
-    const date = String(info.date || '').trim();
-    return '<div class="pv-up-card">' +
-      '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
-      (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
-      (reason ? '<div class="pv-up-tip">' + esc(reason) + ' 可复制下面命令手动升级：</div>' : '') +
-      '<pre class="pv-up-cmd" id="pv-up-cmd">' + esc(cmd) + '</pre>' +
-      '<button type="button" class="btn primary" id="pv-up-copy">复制升级命令</button>' +
-    '</div>';
-  }
-  function bindCopy(box, cmd) {
-    const cp = $('pv-up-copy');
-    if (!cp) return;
-    cp.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(cmd);
-        cp.textContent = '✓ 已复制';
-        setTimeout(() => { if (cp.isConnected) cp.textContent = '复制升级命令'; }, 1800);
-      } catch (e) {
-        const pre = $('pv-up-cmd');
-        if (pre) { const rg = document.createRange(); rg.selectNodeContents(pre); const se = window.getSelection(); se.removeAllRanges(); se.addRange(rg); }
-        cp.textContent = '请手动复制上面选中的命令';
-      }
-    };
+  // 更新要点：优先渲染 items 数组（一行一条），没有就退回 notes 段落（兼容旧版数据）
+  function updateItemsHTML(info, cls) {
+    const items = Array.isArray(info && info.items) ? info.items.filter(x => String(x || '').trim()) : [];
+    if (items.length) {
+      return '<ul class="' + (cls || 'pv-up-list') + '">' +
+        items.map(x => '<li>' + esc(String(x).trim()) + '</li>').join('') + '</ul>';
+    }
+    const notes = String((info && info.notes) || '').trim();
+    return notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '';
   }
   // 轮询升级状态；重启时 fetch 会短暂失败，容忍 6 次（约 12 秒）。
   function pollUpgrade(box, target) {
@@ -5424,48 +5429,31 @@
         return;
       }
     }
-    const canOneKey = !!(info && info.hasNew === true) && (info.admin !== false);
-    const notes = String(info.notes || '').trim();
+    // 走到这里一定是「有新版本」：上面两条路径各自在「已是最新」时已经 return。
+    // 只有后端明确回 admin:true 才给「一键升级」按钮；普通账号只显示检查结果，不给任何升级入口。
+    const isAdmin = info.admin === true;
     const date = String(info.date || '').trim();
+    const title = String(info.title || '').trim();
     // v1.8.5：服务端所有源都失败时会用本地缓存顶上，这里必须说清楚「可能不是最新」
     const cachedTip = (info && info.cached)
       ? '<div class="pv-up-muted">⚠ 服务器此刻连不上版本文件，以下为上次缓存的信息' +
         (info.cachedAt ? '（' + new Date(info.cachedAt).toLocaleString() + '）' : '') + '，可能不是最新。</div>'
       : '';
-    if (canOneKey) {
-      box.innerHTML = '<div class="pv-up-card">' +
-        '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' + (date ? '<span>' + esc(date) + '</span>' : '') + '</div>' +
-        (notes ? '<div class="pv-up-notes">' + esc(notes) + '</div>' : '') +
-        cachedTip + staleTip(curReal, curTag) +
+    const headHTML = '<div class="pv-up-head"><b>发现新版本 ' + esc(latest) + '</b>' +
+      (date ? '<span>' + esc(date) + '</span>' : '') + '</div>';
+    const bodyHTML = (title ? '<div class="pv-up-title">' + esc(title) + '</div>' : '') + updateItemsHTML(info, 'pv-up-list');
+    if (isAdmin) {
+      box.innerHTML = '<div class="pv-up-card">' + headHTML + bodyHTML + cachedTip + staleTip(curReal, curTag) +
         '<div class="pv-up-tip">点击后服务器自动下载、备份、覆盖并重启，期间网站短暂中断，数据不会丢失。</div>' +
         '<button type="button" class="btn primary" id="pv-up-onekey">一键升级到 ' + esc(latest) + '</button>' +
       '</div>';
       const btn = $('pv-up-onekey');
       if (btn) btn.onclick = () => oneKeyUpgrade(box, latest);
     } else {
-      // 非管理员或旧服务端：只给手动命令（保持向后兼容，不暴露升级操作给普通用户）
-      // 重新拼一份完整命令（info 可能来自公开 version.json）
-      const pkg = String(info.package || 'house-view-tracker-linux-x64_' + latest.replace(/^v/i, '') + '.tar.gz');
-      const dl = String((info.downloadUrls && info.downloadUrls[0]) || info.downloadUrl || '');
-      const dir = String(info.installDir || '/data/house-view-tracker');
-      const cmd = [
-        'sudo systemctl stop house-view-tracker',
-        'cd ' + dir.replace(/\/+$/, ''),
-        'cp -r data ../house-view-tracker-data-backup-$(date +%Y%m%d)',
-        dl ? ('curl -fL -o /tmp/' + pkg + ' "' + dl + '"') : ('# 请先把升级包 ' + pkg + ' 上传到服务器 /tmp/'),
-        'tar -xzf /tmp/' + pkg + ' --strip-components=1',
-        'sudo systemctl restart house-view-tracker'
-      ].join('\n');
-      // 提示语按真实原因区分：把「服务端拉不到版本文件」和「不是管理员」分开说，
-      // 否则用户会以为是自己权限没配好，实际是服务器网络/取版本文件失败。
-      const tip = backendErr
-        ? (/管理员/.test(backendErr)
-            ? '当前账号不是管理员（仅 ADMIN_EMAILS 里的账号可一键升级）'
-            : '服务端检查更新失败：' + backendErr + '（以下为手动升级命令）')
-        : '当前账号不是管理员，或服务端尚未开启一键升级';
-      box.innerHTML = manualUpgradeCard(info, latest, tip);
-      if (cachedTip) box.insertAdjacentHTML('afterbegin', cachedTip);
-      bindCopy(box, cmd);
+      // 普通账号：只报到这儿为止。不给按钮、不给命令，升级由管理员来做。
+      box.innerHTML = '<div class="pv-up-card">' + headHTML + bodyHTML + cachedTip + staleTip(curReal, curTag) +
+        '<div class="pv-up-tip">升级需要管理员操作，请联系管理员更新。</div>' +
+      '</div>';
     }
   }
   // 与后端一致的版本比较（缺少后端接口时的前端兜底用）
@@ -5499,13 +5487,20 @@
         const ver = String(it.version || '').trim();
         const date = String(it.date || '').trim();
         const notes = String(it.notes || '').trim();
+        const title = String(it.title || '').trim();
+        // 新版格式：一句话标题 + 若干条要点（一行一条）；老数据只有 notes，就按段落显示
+        const items = Array.isArray(it.items) ? it.items.map(x => String(x || '').trim()).filter(Boolean) : [];
+        const body = items.length
+          ? '<ul class="cl-list">' + items.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+          : (notes ? '<p class="cl-notes">' + esc(notes) + '</p>' : '');
         return '<div class="cl-item' + (isCur ? ' is-latest' : '') + (isTail ? ' is-tail' : '') + '">' +
           '<div class="cl-head">' +
             '<span class="cl-ver">' + esc(ver) + '</span>' +
             (isCur ? '<span class="cl-tag">当前版本</span>' : '') +
             (date ? '<span class="cl-date">' + esc(date) + '</span>' : '') +
           '</div>' +
-          (notes ? '<p class="cl-notes">' + esc(notes) + '</p>' : '') +
+          (title ? '<div class="cl-sub">' + esc(title) + '</div>' : '') +
+          body +
         '</div>';
       };
       const canCollapse = sorted.length > CL_COLLAPSE_AT;
@@ -6475,7 +6470,7 @@
     if (dOn) dOn.onchange = paintDeadline;
     if (dDate) dDate.onchange = paintDeadline;
     paintDeadline();
-    // ---------- 检查更新（只读公开 version.json，不上传任何数据；仅提示 + 给命令，不碰服务器文件） ----------
+    // ---------- 检查更新（只读，不碰服务器文件）：所有人可用；只有管理员能看到「一键升级」按钮 ----------
     const chkBtn = $('pv-check-update');
     if (chkBtn) chkBtn.onclick = () => checkForUpdate(bv.tag, $('pv-update'));
 
@@ -6915,50 +6910,6 @@
     $('dash-sens').innerHTML = sensCard;
     $('dash-funnel').innerHTML = funnelCard;
     $('dash-results-r').innerHTML = loanCard + savingCard + pressureCard;
-  }
-
-
-  // ---- 看房驾驶 v2 卡片用到的数据聚合辅助（区域 / 装修），被上方 paintDashboard 复用，不另写公式 ----
-  function anaRegion(props, d) {
-    const map = {};
-    props.forEach((p) => {
-      const dist = (p.location && p.location.district) || '';
-      if (!dist) return;
-      if (!map[dist]) map[dist] = { count: 0, sum: 0 };
-      map[dist].count++; map[dist].sum += (num(txOf(p).totalPrice) || 0);
-    });
-    const rows = Object.keys(map).map((k) => ({ name: k, count: map[k].count, avg: map[k].sum / map[k].count }))
-      .sort((a, b) => b.count - a.count);
-    const maxC = Math.max(1, ...rows.map((r) => r.count));
-    rows.forEach((r) => { r.wpct = Math.round(r.count / maxC * 100); });
-    const pref = String(d.districts || '').split(/[,，、\s]+/).filter(Boolean);
-    let matchCount = 0;
-    props.forEach((p) => {
-      const dist = (p.location && p.location.district) || '';
-      if (dist && pref.some((x) => dist.indexOf(x) > -1)) matchCount++;
-    });
-    return { rows, prefText: pref.join('/') || '未设置', matchCount };
-  }
-  function anaRenovation(props) {
-    const items = [];
-    props.filter(isPurchased).forEach((p) => {
-      const a = atOf(p);
-      const renos = Array.isArray(a.renovations) ? a.renovations : [];
-      const budget = num(a.renovationCost);
-      const title = p.title || (p.location && p.location.community) || '已购房源';
-      if (renos.length) {
-        renos.forEach((r) => {
-          const phases = Array.isArray(r.progress) ? r.progress : [];
-          const done = phases.filter((x) => x.status === '已完成').length;
-          const pct = phases.length ? Math.round(done / phases.length * 100) : 0;
-          const actual = phases.reduce((s, x) => s + (num(x.cost) || 0), 0);
-          items.push({ title: renos.length > 1 ? title + ' · ' + (r.name || '方案') : title, phases, pct, budget, actual, over: budget > 0 && actual > budget });
-        });
-      } else if (budget > 0) {
-        items.push({ title, phases: [], pct: 0, budget, actual: 0, over: false });
-      }
-    });
-    return { items };
   }
 
 

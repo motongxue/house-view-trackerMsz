@@ -35,6 +35,13 @@
 - 代码扫描使用 CodeQL，检测注入、路径穿越等常见漏洞
 - 配置 `.env` 存放敏感配置，**禁止提交真实密钥**，仅提供 `.env.example` 模板
 
+## v2.0.0 安全加固与部署须知
+
+- **升级包验签**：发布侧用 Ed25519 私钥对 `version.json` 签名（`scripts/sign-release.js`），服务端信任根在 `data/trust/pubkey.pem`，首次启动从程序包的 `trust/pubkey.pem` 复制一次，之后永不覆盖。私钥不入库、不进包。
+- **打包排除（强制）**：打升级包时必须排除 `.env`、`.token-secret`、`data/`、`uploads/`、`public/media/`、任何 `*.pem` 私钥、`*.log`。信任根公钥 `trust/pubkey.pem` 必须包含。
+- **媒体鉴权**：房源图片/视频走 HMAC 短签名 URL，直链离开浏览器即可过期；上传按用户分目录并有配额。
+- **HTTPS 部署**：见 `deploy/Caddyfile.example`。域名备案通过后配反代，服务端开 `HVT_REQUIRE_HTTPS=1` + `HVT_TRUST_PROXY=1` + `HVT_BIND=127.0.0.1`，云安全组关掉 8787 公网入口。
+
 ## 已知不处理范围
 - 低风险、不影响业务的信息泄露
 - 仅在本地调试环境、非生产环境才能触发的漏洞

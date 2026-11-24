@@ -6,6 +6,8 @@ data/
 .token-secret
 *.pem
 *.key
+# 例外：发布公钥必须随包分发（私钥仍被 *.pem 忽略，只留本机）
+!trust/pubkey.pem
 secrets/
 credentials.json
 node_modules/

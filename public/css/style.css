@@ -1149,12 +1149,11 @@ body.dark #kb-note-title::placeholder, body.dark #kb-note-content::placeholder {
 .pv-update .pv-up-head b { color: var(--primary); font-size: var(--fs-14); }
 .pv-update .pv-up-head span { color: var(--muted); font-size: var(--fs-12); }
 .pv-update .pv-up-notes { margin-top: 6px; color: var(--text-2); font-size: var(--fs-12); white-space: pre-wrap; }
+/* 更新要点：一句话标题 + 一行一条，照着 App 更新说明的写法 */
+.pv-update .pv-up-title { margin-top: 8px; font-size: var(--fs-13); font-weight: 600; color: var(--text); }
+.pv-update .pv-up-list { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); font-size: var(--fs-12); line-height: 1.75; }
+.pv-update .pv-up-list li { list-style: disc; }
 .pv-update .pv-up-tip { margin: 8px 0 6px; color: var(--muted); font-size: var(--fs-12); }
-.pv-update .pv-up-cmd {
-  margin: 0 0 10px; padding: 10px 12px; background: var(--bg); border: var(--border-1);
-  border-radius: var(--radius-sm); color: var(--text-2); font-size: 12px; line-height: 1.6;
-  white-space: pre; overflow-x: auto; user-select: text;
-}
 /* 一键升级：进度条 + 阶段文字 */
 .pv-update .pv-up-running .pv-up-bar {
   height: 6px; margin: 10px 0 8px; border-radius: 99px; overflow: hidden;
@@ -1243,6 +1242,11 @@ body.dark #kb-note-title::placeholder, body.dark #kb-note-content::placeholder {
 }
 .cl-head .cl-date { font-size: var(--fs-12); color: var(--muted); }
 .cl-notes { margin: 6px 0 0; font-size: var(--fs-12); line-height: 1.65; color: var(--text-2); white-space: pre-wrap; }
+/* 更新记录在新版里是「一句话标题 + 几条要点」，比整段说明好扫读 */
+.cl-sub { margin: 7px 0 0; font-size: var(--fs-13); font-weight: 600; color: var(--text); }
+.cl-list { margin: 5px 0 0; padding-left: 18px; font-size: var(--fs-12); line-height: 1.7; color: var(--text-2); }
+.cl-list li { list-style: disc; }
+.cl-list li + li { margin-top: 2px; }
 .cl-loading, .cl-empty, .cl-err { font-size: var(--fs-12); color: var(--muted); padding: 8px 0; }
 .cl-err { color: var(--danger); }
 /* v1.9.0：更新记录默认只列最近 3 条，其余收起，点箭头展开 */

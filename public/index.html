@@ -9,11 +9,11 @@
   <meta name="referrer" content="no-referrer" />
   <title>择隅 · 看房记录与对比</title>
   <!-- 设计规范：设计变量 + 组件样式（单一取值源） + 业务样式 -->
-  <link rel="stylesheet" href="./css/tokens.css?v=v1.10.2" />
-  <link rel="stylesheet" href="./css/ui-kit.css?v=v1.10.2" />
-  <link rel="stylesheet" href="./css/style.css?v=v1.10.2" />
+  <link rel="stylesheet" href="./css/tokens.css?v=v2.0.1" />
+  <link rel="stylesheet" href="./css/ui-kit.css?v=v2.0.1" />
+  <link rel="stylesheet" href="./css/style.css?v=v2.0.1" />
   <!-- 1) 配置先于一切加载（高德 Key 留空，登录后由 app.js 按当前用户自配动态注入） -->
-  <script src="./config.js?v=v1.10.2"></script>
+  <script src="./config.js?v=v2.0.1"></script>
   <!-- 2) 本地已有登录态 → 刷新直接上应用骨架，不铺整屏启动遮罩（避免大蓝屏闪一下）；
        无登录态仍保留遮罩，否则会先闪登录页再跳转。boot 判断完由 app.js 移除该类。
        必须内联在本处：放到 app.js 里就已经晚了，遮罩早就画出来了。 -->
@@ -403,19 +403,22 @@
     </div>
   </div>
 
-  <script src="./js/api.js?v=v1.10.2"></script>
-  <script src="./js/auth.js?v=v1.10.2"></script>
-  <script src="./js/store.js?v=v1.10.2"></script>
-  <script src="./js/knowledge-data.js?v=v1.10.2"></script>
-  <script src="./js/reno-demo.js?v=v1.10.2"></script>
-  <script src="./js/geo.js?v=v1.10.2"></script>
-  <script src="./js/map.js?v=v1.10.2"></script>
-  <script src="./js/regions.js?v=v1.10.2"></script>
-  <script src="./js/app.js?v=v1.10.2"></script>
+  <script src="./js/api.js?v=v2.0.1"></script>
+  <script src="./js/botguard.js?v=v2.0.1"></script>
+  <script src="./js/auth.js?v=v2.0.1"></script>
+  <script src="./js/store.js?v=v2.0.1"></script>
+  <script src="./js/knowledge-data.js?v=v2.0.1"></script>
+  <script src="./js/reno-demo.js?v=v2.0.1"></script>
+  <script src="./js/geo.js?v=v2.0.1"></script>
+  <script src="./js/map.js?v=v2.0.1"></script>
+  <script src="./js/regions.js?v=v2.0.1"></script>
+  <script src="./js/app.js?v=v2.0.1"></script>
   <!-- 运行监控：设置弹窗里的登录日志 / 模型流量（只读，挂在 window.HvtMonitor） -->
-  <script src="./js/monitor.js?v=v1.10.2"></script>
-  <!-- 装修设计：自研 3D 引擎（ES module，本地 Three.js，异步就绪后派发 floorplan:ready） -->
-  <script type="module" src="./js/floorplan-3d.js?v=v1.10.2"></script>
+  <script src="./js/monitor.js?v=v2.0.1"></script>
+  <!-- 装修设计：自研 3D 引擎（ES module）已改为按需加载（v1.10.4）。
+       它只在「上游 iframe 版」不可用的回退分支里用到，而首页/列表页根本不需要 3D，
+       原先在这里直接引会把 1.26MB 的 three.module.js 一并拽下来，公网实测白等 3 秒多。
+       真要回退到自研引擎时，app.js 里的 ensureFloorplan3D() 会动态 import 它。 -->
 
   <!-- ============ AI 智能录入弹窗（文本 / 截图 / 链接 → 大模型抽取房源字段） ============ -->
   <div id="aie-modal" class="modal hidden">

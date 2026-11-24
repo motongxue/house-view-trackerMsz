@@ -3,12 +3,12 @@
 //   Auth.init() / Auth.signOut() / Auth.getSession() / Auth.onAuthStateChange(cb)
 //
 // 登录页按参考图重做：邮箱验证码内联输入，图形验证码保持弹窗。
-//   · 验证码登录：邮箱 + 邮箱验证码（免密），点「获取验证码」才弹图形验证
-//   · 密码登录  ：邮箱 + 密码；每次点「登录」都先弹图形验证码，答对后才提交密码
+//   · 密码登录  ：邮箱 + 密码；点「登录」先走无感（PoW + 行为评分），服务端要验证码才弹窗
+//   · 验证码登录：邮箱 + 邮箱验证码（免密），点「获取验证码」同样先走无感
 //   · 注册 / 找回密码：仍走邮箱验证码（验证邮箱真实性），复用同一套发码通道
-// 安全链路不变：需要发邮件时，先过一次性图形验证码；邮箱码一次性、10 分钟、错 5 次作废。
+// 安全链路：所有提交都带 BotGuard 的一次性算力证明（PoW）；邮箱码一次性、10 分钟、错 5 次作废。
 // 注意：只有「图形验证码」是弹窗（#captcha-modal），邮箱验证码永远在表单里输入，不要再给它加弹窗。
-// 图形验证码的算式与候选数字都画在同一张 canvas 里，用户点图中数字作答；不要退回下面那排数字按钮。
+// 图形验证码的算式与候选数字都画在同一张图里，用户点图中数字作答；不要退回下面那排数字按钮。
 const Auth = (function () {
   let mode = 'code';        // code | password | signup | reset
   const listeners = [];
@@ -48,6 +48,7 @@ const Auth = (function () {
   function shortError(raw) {
     const s = String(raw || '操作失败');
     if (/NEED_CAPTCHA/.test(s)) return '请先完成安全验证';
+    if (/POW_INVALID|安全校验已过期/.test(s)) return '安全校验已过期，请重试';
     if (/无法连接服务器/.test(s)) return s;
     if (/尚未配置邮件服务|SMTP/.test(s)) return '邮件服务未配置，请联系管理员';
     if (/验证未通过/.test(s)) return '安全验证未通过，请重试';
@@ -130,82 +131,28 @@ const Auth = (function () {
     });
   }
 
-  // ---------- 图形验证码弹窗：算式与 6 个候选数字都画在 canvas 里，直接点图作答 ----------
-  function roundedRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
-  }
-  function drawCaptcha(q) {
+  // ---------- 图形验证码弹窗：图由服务端渲染，前端只画图 + 铺点击热区 ----------
+  // 前端拿不到算式和答案（响应里只有一张 SVG 和 6 个矩形坐标），提交的是「第几个」。
+  function drawCaptchaImage(q) {
     const cv = el('captcha-canvas');
     if (!cv || !cv.getContext) return;
     const ctx = cv.getContext('2d');
-    const w = cv.width, h = cv.height;
-    ctx.clearRect(0, 0, w, h);
-    ctx.textAlign = 'start'; ctx.textBaseline = 'middle';
-    const bg = ctx.createLinearGradient(0, 0, w, h);
-    bg.addColorStop(0, '#eef4ff'); bg.addColorStop(1, '#f8fbff');
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
-    for (let i = 0; i < 6; i++) {
-      ctx.strokeStyle = 'rgba(90,130,210,' + (0.10 + Math.random() * 0.14).toFixed(2) + ')';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(Math.random() * w, Math.random() * h);
-      ctx.bezierCurveTo(Math.random() * w, Math.random() * h, Math.random() * w, Math.random() * h, Math.random() * w, Math.random() * h);
-      ctx.stroke();
-    }
-    for (let i = 0; i < 40; i++) {
-      ctx.fillStyle = 'rgba(70,110,190,' + (0.08 + Math.random() * 0.18).toFixed(2) + ')';
-      ctx.beginPath(); ctx.arc(Math.random() * w, Math.random() * h, 0.8 + Math.random(), 0, Math.PI * 2); ctx.fill();
-    }
-    // 算式：居中画在图形框上半部
-    const text = q.a + ' ' + q.op + ' ' + q.b + ' = ?';
-    ctx.font = 'bold 26px "Segoe UI", "Microsoft YaHei", Arial, sans-serif';
-    const chars = Array.from(text);
-    const cw = chars.map((ch) => ctx.measureText(ch).width);
-    const total = cw.reduce((s, v) => s + v + 2, 0);
-    let x = (w - total) / 2;
-    chars.forEach((ch, i) => {
-      ctx.save();
-      ctx.translate(x, 32 + (Math.random() * 4 - 2));
-      ctx.rotate((Math.random() - 0.5) * 0.14);
-      ctx.fillStyle = '#23406f';
-      ctx.fillText(ch, 0, 0);
-      ctx.restore();
-      x += cw[i] + 2;
-    });
-    // 候选数字：3 列 × 2 行散在图里，随机抖动 + 轻微旋转；命中区按外接矩形放大容错
-    const regions = [];
-    (q.options || []).slice(0, 6).forEach((n, i) => {
-      const col = i % 3, row = Math.floor(i / 3);
-      const cx = 50 + col * 100 + (Math.random() * 18 - 9);
-      const cy = 80 + row * 44 + (Math.random() * 10 - 5);
-      const bw = 64, bh = 36;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate((Math.random() - 0.5) * 0.14);
-      ctx.fillStyle = 'rgba(255,255,255,.88)';
-      ctx.strokeStyle = 'rgba(70,110,190,.42)';
-      ctx.lineWidth = 1.2;
-      roundedRect(ctx, -bw / 2, -bh / 2, bw, bh, 8);
-      ctx.fill(); ctx.stroke();
-      ctx.textAlign = 'center';
-      ctx.font = 'bold 20px "Segoe UI", "Microsoft YaHei", Arial, sans-serif';
-      ctx.fillStyle = '#23406f';
-      ctx.fillText(String(n), 0, 1);
-      ctx.restore();
-      regions.push({ value: Number(n), x: cx - bw / 2 - 8, y: cy - bh / 2 - 8, w: bw + 16, h: bh + 16 });
-    });
-    // 命中区供点击判定（不含正确答案标记；自动化验证也可据此定位可点数字）
-    cv.__hits = regions;
+    cv.__hits = [];
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (!q || !q.image) return;
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      // 热区顺序即提交的下标，与图片里的数字顺序一致
+      cv.__hits = (q.hits || []).map((h, i) => ({ idx: i, x: h.x, y: h.y, w: h.w, h: h.h }));
+    };
+    img.onerror = () => setCapMsg('图形加载失败，点「换一个」重试');
+    img.src = q.image;
   }
   function paintCaptcha(q) {
     capData = q;
-    drawCaptcha(q);
+    drawCaptchaImage(q);
     setCapMsg('');
   }
   async function openCaptcha(action) {
@@ -229,13 +176,14 @@ const Auth = (function () {
     capAction = '';
     setCapMsg('');
   }
-  function chooseCaptcha(n) {
+  // 提交的是热区下标（服务端才知道它对应哪个数），前端全程不接触答案
+  function chooseCaptcha(idx) {
     if (!capData) return;
-    const cap = { id: capData.id, answer: n };
+    const cap = { id: capData.id, answer: idx };
     const action = capAction;
     closeCaptcha();
     if (action === 'password-login') submitPasswordLogin(cap);
-    else if (action === 'signup-register') submitSignup(cap);  // 邮箱验证关闭时注册：图形验证码即安全门槛
+    else if (action === 'signup-register') submitSignup(cap);  // 注册补答图形验证码后重提交
     else sendEmailCode(cap);
   }
   // 点图形框里的数字作答：把鼠标坐标按 canvas 缩放比换算，命中即提交；点空白处只提示、不消耗挑战
@@ -247,7 +195,7 @@ const Auth = (function () {
     const y = (e.clientY - rect.top) * (cv.height / rect.height);
     const hit = (cv.__hits || []).find((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
     if (!hit) { setCapMsg('请点击图中的数字'); return; }
-    chooseCaptcha(hit.value);
+    chooseCaptcha(hit.idx);
   }
 
   // ---------- 发邮箱验证码 ----------
@@ -283,13 +231,14 @@ const Auth = (function () {
   function purposeOfMode() {
     return mode === 'signup' ? 'register' : (mode === 'reset' ? 'reset' : 'code-login');
   }
-  async function sendEmailCode(cap) {
+  async function sendEmailCode(cap, retried) {
     const email = emailValue();
     const purpose = purposeOfMode();
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); return; }
     setMsg('发送中…');
     try {
-      const r = await Api.emailCode(email, purpose, cap);
+      const g = await BotGuard.attach();
+      const r = await Api.emailCode(email, purpose, cap, g);
       sentEmail = email;
       sentPurpose = purpose;
       startCountdown(CODE_RESEND_SECONDS);
@@ -297,11 +246,14 @@ const Auth = (function () {
       el('auth-email-code').focus();
     } catch (err) {
       const raw = (err && err.message) || ''; // F186: 拒绝值可能为 null / 非 Error
+      // 挑战过期/已被用掉：换一个再试一次，用户无感
+      if (/POW_INVALID/.test(raw) && !retried) { await BotGuard.reset(); return sendEmailCode(cap, true); }
       if (/已注册/.test(raw)) {
         switchMode('password');
         setMsg('该邮箱已注册，请直接登录');
         return;
       }
+      if (/NEED_CAPTCHA/.test(raw)) { setMsg('请完成安全验证'); openCaptcha('email-code'); return; }
       setMsg(shortError(raw));
       // 图形验证码答错 / 过期：自动换一张，表单内容不动
       if (/验证未通过/.test(raw)) openCaptcha('email-code');
@@ -311,7 +263,7 @@ const Auth = (function () {
     if (tickTimer) return;
     if (!EMAIL_RE.test(emailValue())) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
     setMsg('');
-    openCaptcha('email-code');
+    sendEmailCode(null);   // 先走无感：服务端要验证码才弹窗
   }
 
   // ---------- 四种提交 ----------
@@ -333,30 +285,36 @@ const Auth = (function () {
     return true;
   }
 
-  // 密码登录入口：先校验表单，再弹图形验证码；答对后由 chooseCaptcha 带 cap 提交
+  // 密码登录入口：先校验表单，然后直接带 PoW 提交（无感）。
+  // 服务端按行为评分判断，回 NEED_CAPTCHA 才弹图形验证码；答对后由 chooseCaptcha 带 cap 再提交一次。
   function startPasswordLogin() {
     if (!el('captcha-modal').classList.contains('hidden')) return; // 弹窗已开着，别重复领挑战
     const email = emailValue(), pw = el('auth-password').value;
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
     if (!pw) { setMsg('请输入密码'); el('auth-password').focus(); return; }
     setMsg('');
-    openCaptcha('password-login');
+    submitPasswordLogin(null);
   }
 
-  async function submitPasswordLogin(cap) {
+  async function submitPasswordLogin(cap, retried) {
     const email = emailValue(), pw = el('auth-password').value;
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); return; }
     if (!pw) { setMsg('请输入密码'); return; }
-    if (!cap || !cap.id) { startPasswordLogin(); return; } // 挑战丢失时绝不裸发登录请求
     const btn = el('auth-submit');
     btn.disabled = true;
     setMsg('');
     try {
-      const data = await Api.login(email, pw, cap);
+      const g = await BotGuard.attach();
+      const data = await Api.login(email, pw, cap, g);
       finishLogin(data.data);
     } catch (err) {
       const raw = (err && err.message) || '';
-      if (/NEED_CAPTCHA/.test(raw)) { setMsg('请先完成安全验证'); openCaptcha('password-login'); }
+      if (/POW_INVALID/.test(raw) && !retried) {
+        await BotGuard.reset();
+        btn.disabled = false;
+        return submitPasswordLogin(cap, true);
+      }
+      if (/NEED_CAPTCHA/.test(raw)) { setMsg('请完成安全验证'); openCaptcha('password-login'); }
       else if (/验证未通过/.test(raw)) { setMsg('验证未通过，请重试'); openCaptcha('password-login'); }
       else setMsg(shortError(raw));
     } finally { btn.disabled = false; }
@@ -373,33 +331,35 @@ const Auth = (function () {
     finally { btn.disabled = false; }
   }
 
-  // 邮箱验证关闭时的注册入口：先校验邮箱/密码，再弹图形验证码，答对后带 cap 提交
+  // 注册入口：先校验邮箱/密码，再带 PoW 无感提交；服务端要图形验证码才弹窗
   function startSignup() {
     const email = emailValue(), pw = el('auth-password').value;
     if (!EMAIL_RE.test(email)) { setMsg('请输入有效的邮箱地址'); el('auth-email').focus(); return; }
     if (pw.length < PASSWORD_MIN) { setMsg('密码至少 ' + PASSWORD_MIN + ' 位'); el('auth-password').focus(); return; }
     setMsg('');
-    openCaptcha('signup-register');
+    submitSignup(null);
   }
 
-  async function submitSignup(cap) {
+  async function submitSignup(cap, retried) {
     const pw = el('auth-password').value;
     if (pw.length < PASSWORD_MIN) { setMsg('密码至少 ' + PASSWORD_MIN + ' 位'); return; }
-    if (emailVerification) {
-      // 开启：沿用邮箱验证码流程
-      if (!assertCodeAndEmail('register')) return;
-    } else {
-      // 关闭：必须带图形验证码，否则退回弹窗（绝不裸发注册请求）
-      if (!cap || !cap.id) { startSignup(); return; }
-    }
+    // 开启邮箱验证时沿用邮箱验证码流程；关闭时靠 PoW + 服务端评分把关
+    if (emailVerification && !assertCodeAndEmail('register')) return;
     const btn = el('auth-submit');
     btn.disabled = true; setMsg('');
     try {
-      const data = await Api.register(emailValue(), pw, emailVerification ? codeValue() : '', cap);
+      const g = await BotGuard.attach();
+      const data = await Api.register(emailValue(), pw, emailVerification ? codeValue() : '', cap, g);
       finishLogin(data.data);
     } catch (err) {
       const raw = (err && err.message) || '';
+      if (/POW_INVALID/.test(raw) && !retried) {
+        await BotGuard.reset();
+        btn.disabled = false;
+        return submitSignup(cap, true);
+      }
       if (/已注册/.test(raw)) { switchMode('password'); setMsg('该邮箱已注册，请直接登录'); }
+      else if (/NEED_CAPTCHA/.test(raw)) { setMsg('请完成安全验证'); openCaptcha('signup-register'); }
       else if (/验证未通过/.test(raw)) { setMsg(shortError(raw)); openCaptcha('signup-register'); }
       else setMsg(shortError(raw));
     } finally { btn.disabled = false; }
@@ -423,7 +383,7 @@ const Auth = (function () {
   function handleSubmit(e) {
     e.preventDefault();
     if (mode === 'password') startPasswordLogin();
-    else if (mode === 'signup') { if (emailVerification) submitSignup(); else startSignup(); }
+    else if (mode === 'signup') startSignup();
     else if (mode === 'reset') submitReset();
     else submitCodeLogin();
   }
@@ -463,6 +423,8 @@ const Auth = (function () {
     // 先按默认（关闭态）渲染，再异步拉后端开关纠正；接口失败时保持关闭态，开箱即用不受影响
     switchMode('password');
     loadAuthConfig();
+    // 无感风控：立刻开始采集行为信号，并在空闲时把 PoW 算好（用户填表的时间足够）
+    if (window.BotGuard) BotGuard.start();
     // 浏览器可能在渲染后才自动填充，补一次清理（只清非真人输入的框）
     setTimeout(scrubPasswords, 300);
   }

@@ -1,0 +1,44 @@
+name: CI
+
+# 只做「能自动判断对错」的那部分：语法、JSON、版本号一致。
+# 业务回归要连数据库，留在本地跑（会话目录里的 Playwright 脚本）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # scripts/check.js 只用 Node 内置模块，不需要 npm install
+      - name: 体检（语法 / JSON / 版本号一致）
+        run: node scripts/check.js
+
+      # v2.0.0：核心安全不变量单测（升级验签、下载源白名单、设备 cookie、媒体签名）
+      - name: 安全不变量单测
+        run: node --test test/security.test.mjs
+
+  sast:
+    name: 静态安全扫描
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks（密钥泄露）
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Semgrep（注入 / OWASP）
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/nodejsscan
+            p/owasp-top-ten

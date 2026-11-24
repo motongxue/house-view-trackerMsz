@@ -13,7 +13,9 @@
  * ============================================================ */
 import * as THREE from './three/three.module.js';
 
-const VERSION = '1.0.0';
+// 这是「渲染引擎自己的」版本号，与系统版本（version.json 的 vX.Y.Z）无关，不要混用。
+// 改名成 ENGINE_VERSION 就是为了避免被当成系统版本去对账。
+const ENGINE_VERSION = '1.0.0';
 const WALL_H = 2.9;
 const DOOR_H = 2.1;
 const WIN_SILL = 0.9;
@@ -916,7 +918,7 @@ function createInstance(host, opts) {
 
 /* ---------------- 门面 ---------------- */
 const api = {
-  version: VERSION,
+  version: ENGINE_VERSION,
   samplePlan: samplePlan,
   normalizePlan: normalizePlan,
   init(host, opts) {
@@ -927,6 +929,6 @@ const api = {
 };
 
 window.Floorplan3D = api;
-window.dispatchEvent(new CustomEvent('floorplan:ready', { detail: { version: VERSION } }));
+window.dispatchEvent(new CustomEvent('floorplan:ready', { detail: { version: ENGINE_VERSION } }));
 
 export default api;

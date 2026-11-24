@@ -220,10 +220,14 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
      其余 HTML / CSS / JS 源码保持上游原样。 -->
 <script type="importmap">
 {"imports":{
-  "three":"./js/three/three.module.js",
+  "three":"./js/three/three.module.js?v=v2.0.1",
   "three/addons/":"./js/three/addons/"
 }}
 </script>
+<!-- v1.10.4：three.module.js 有 1.26MB，内联 module 要等它下载+解析完才发现这条依赖，
+     实测公网要白等 3 秒多。这里提前声明，让浏览器解析 HTML 时就并行下载。
+     注意 href 必须与 importmap 里 "three" 的映射完全一致（含 ?v=），否则会变成两份模块重复下载。 -->
+<link rel="modulepreload" href="./js/three/three.module.js?v=v2.0.1">
 </head>
 <body>
 <div class="app">
@@ -351,12 +355,12 @@ main.drawer-panel #fab{opacity:0;visibility:hidden}
 <div id="toast"></div>
 
 <!-- HVT 扩展：内置户型包（本地纯数据，零外部请求；缺文件时自动回退原始三室两厅） -->
-<script src="./js/floorplan-layouts.js?v=v1.10.2"></script>
+<script src="./js/floorplan-layouts.js?v=v2.0.1"></script>
 <!-- HVT 扩展：外部户型方案导入（JSON / 技能 HTML / 技能 ZIP → HouseSpec → 本页几何） -->
-<script src="./js/vendor/jszip.min.js?v=v1.10.2"></script>
-<script src="./js/house-spec-convert.js?v=v1.10.2"></script>
-<script src="./js/floorplan-import-spec.js?v=v1.10.2"></script>
-<script src="./js/floorplan-auto-furnish.js?v=v1.10.2"></script>
+<script src="./js/vendor/jszip.min.js?v=v2.0.1"></script>
+<script src="./js/house-spec-convert.js?v=v2.0.1"></script>
+<script src="./js/floorplan-import-spec.js?v=v2.0.1"></script>
+<script src="./js/floorplan-auto-furnish.js?v=v2.0.1"></script>
 <script>
 /* ======================= 多语言（中文 / English，默认中文） ======================= */
 const LANG_KEY = 'huxing-lang';
@@ -1606,7 +1610,7 @@ window.__hvtApplyInternalState = function(s){
   toast(tr('方案已导入', 'Plan imported') + (s.WALLS ? tr('（含户型几何）', ' (with geometry)') : ''));
   return true;
 };
-$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v1.10.2', 'hvt_editor', 'width=1280,height=920');
+$('#openGen').onclick = () => window.open('floorplan-editor.html?v=v2.0.1', 'hvt_editor', 'width=1280,height=920');
 $('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; window.__hvtImportedSpec = false;
   if (window.__hvtBrand0){ const bd = document.querySelector('.brand b'); if (bd){ bd.dataset.zh = window.__hvtBrand0.zh; bd.dataset.en = window.__hvtBrand0.en; applyStaticLang(); } }
   commit(b); renderAll(); } };

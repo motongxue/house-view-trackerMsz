@@ -7,11 +7,29 @@
 //   3) 状态写在 data/ 下（部署包不含 data/，覆盖升级不会冲掉），供前端轮询；
 //   4) 依赖（fs / child_process / fetch / now）可注入，便于纯 Node 回归测试；
 //   5) Linux + systemd 是目标环境；非 Linux 直接拒绝，不改动本机文件。
+//   6) v2.0.0：Ed25519 验签。信任根放 data/trust/pubkey.pem（升级包从不含 data/），
+//      首次安装时从程序目录的 trust/pubkey.pem 复制一次；已存在则永不覆盖。
+//      签名覆盖版本/包/hash/下载源，私钥只在发布者本机，仓库被攻陷也无法签发合法包。
 // ============================================================
 'use strict';
 const nodeFs = require('fs');
 const nodePath = require('path');
 const nodeCp = require('child_process');
+const nodeCrypto = require('crypto');
+
+// 与 scripts/sign-release.js 保持逐字一致；改这里必须同步改那边，否则验签永远失败。
+function signedPayload(info) {
+  return JSON.stringify({
+    version: String((info && info.version) || ''),
+    package: String((info && info.package) || ''),
+    packageSha256: String((info && info.packageSha256) || ''),
+    downloadUrls: Array.isArray(info && info.downloadUrls) ? info.downloadUrls.map((x) => String(x)) : [],
+    title: String((info && info.title) || ''),
+    items: Array.isArray(info && info.items) ? info.items.map((x) => String(x)) : [],
+    notes: String((info && info.notes) || ''),
+    date: String((info && info.date) || '')
+  });
+}
 
 const STATE_FILE = 'upgrade-state.json';
 const BACKUP_DIR = 'upgrade-backups';
@@ -21,6 +39,25 @@ const STALE_MS = 10 * 60 * 1000;     // 超过 10 分钟的非终态视为卡死
 
 // 部署相关标识：硬编码值仅作默认，fork / 私有化部署请用配置或环境覆盖，
 // 否则会静默从上游仓库下载不属于本部署的升级包。
+// 下载源白名单：只允许 HTTPS + 已知发布域名。HVT_RELEASE_HOSTS 可追加自建域名（逗号分隔），
+// 不接受版本文件自带的任意域名——否则攻陷仓库就能把升级指向任意服务器。
+function allowedHosts() {
+  const base = ['gitee.com', 'github.com', 'raw.githubusercontent.com', 'cdn.jsdelivr.net', 'fastly.jsdelivr.net'];
+  const extra = String(process.env.HVT_RELEASE_HOSTS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return base.concat(extra.filter((h) => base.indexOf(h) < 0));
+}
+function isAllowedSource(u) {
+  try {
+    const x = new URL(String(u));
+    if (x.protocol !== 'https:') return false;
+    const host = x.hostname.toLowerCase();
+    if (allowedHosts().indexOf(host) >= 0) return true;
+    // gitee / github 的 releases 下载会 302 到 objects.githubusercontent.com 等 CDN，
+    // 但初始 URL 必须是白名单域名；重定向由 fetchSafe 逐跳 assertSafeUrl 管。
+    return false;
+  } catch (_) { return false; }
+}
+
 function defaultReleaseBases() {
   if (process.env.HVT_RELEASE_BASES) {
     const arr = String(process.env.HVT_RELEASE_BASES).split(',').map((s) => s.trim()).filter(Boolean);
@@ -87,6 +124,8 @@ async function fetchVersionRace(opt) {
   const cacheFile = o.cacheFile || '';
   const now = o.now || (() => Date.now());
   const log = o.log || (() => {});
+  // v2.0.0：逐源验签。必须在「挑最高版本」之前做，否则被投毒的镜像报一个更高版本号就能胜出。
+  const verify = typeof o.verify === 'function' ? o.verify : null;
   if (!list.length) throw new Error('没有可用的版本文件地址');
 
   const errors = [];
@@ -110,6 +149,10 @@ async function fetchVersionRace(opt) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         if (!j || !j.version) throw new Error('版本文件缺少 version 字段');
+        if (verify) {
+          const vr = verify(j);
+          if (!vr || !vr.ok) throw new Error((vr && vr.why) || '版本文件签名校验失败');
+        }
         return j;
       })
       .then((j) => {
@@ -220,13 +263,55 @@ function createUpgrader(opt) {
   const statePath = path.join(dataDir, STATE_FILE);
   const backupRoot = path.join(dataDir, BACKUP_DIR);
   const versionCachePath = path.join(dataDir, 'version-cache.json');
+  // 信任根：data/trust/pubkey.pem。升级包解包到 appDir 且从不含 data/，所以这里不会被覆盖。
+  const trustDir = path.join(dataDir, 'trust');
+  const pubkeyPath = path.join(trustDir, 'pubkey.pem');
   let running = false;
+
+  // 首次启动：从程序包的 trust/pubkey.pem 复制一次到 data/trust/。
+  // 已有则绝不覆盖——这是整个验签体系的根，覆盖等于把锁和钥匙一起交给攻击者。
+  function initTrust() {
+    try {
+      if (fs.existsSync(pubkeyPath)) return { ok: true, from: 'data', note: '已有信任根，保持不变' };
+      const bundled = path.join(appDir, 'trust', 'pubkey.pem');
+      if (!fs.existsSync(bundled)) return { ok: false, note: '程序包内没有 trust/pubkey.pem，验签不可用' };
+      fs.mkdirSync(trustDir, { recursive: true, mode: 0o700 });
+      fs.copyFileSync(bundled, pubkeyPath, fs.constants.COPYFILE_EXCL);
+      try { fs.chmodSync(pubkeyPath, 0o600); } catch (_) {}
+      log('[upgrade] 已初始化信任根：' + pubkeyPath);
+      return { ok: true, from: 'bundle', note: '已从程序包复制信任根' };
+    } catch (e) {
+      return { ok: false, note: '初始化信任根失败：' + e.message };
+    }
+  }
+
+  // 验签：从 data/trust/pubkey.pem 读公钥；验不过一律拒绝，不看 packageSha256 是否有值。
+  // fail-closed：公钥缺失/损坏/签名无效，全部视为不可用。
+  function verifySignature(info) {
+    if (!info || typeof info !== 'object') return { ok: false, why: '版本文件内容无效' };
+    const sig = String(info.signature || '').trim();
+    if (!sig) return { ok: false, why: '版本文件缺少签名（signature），拒绝升级' };
+    if (!/^[A-Za-z0-9+/=]{40,}$/.test(sig)) return { ok: false, why: '签名格式非法' };
+    // 懒初始化：check 接口在启动后随时可能被调，不能依赖 start() 才去建信任根。
+    if (!fs.existsSync(pubkeyPath)) initTrust();
+    let pem;
+    try { pem = fs.readFileSync(pubkeyPath, 'utf8'); }
+    catch (e) { return { ok: false, why: '读取信任根失败：' + e.message + '（请确认程序包内含 trust/pubkey.pem）' }; }
+    try {
+      const ok = nodeCrypto.verify(null, Buffer.from(signedPayload(info), 'utf8'),
+        pem, Buffer.from(sig, 'base64'));
+      return ok ? { ok: true } : { ok: false, why: '版本文件签名不匹配——包或版本文件可能被篡改，拒绝升级' };
+    } catch (e) {
+      return { ok: false, why: '验签失败：' + e.message };
+    }
+  }
 
   // 供 server.js 调用：多源竞速拉版本文件，失败回落 data/version-cache.json
   async function fetchVersion(list, more) {
     const sources = Array.isArray(list) ? list : versionSources(o.updateUrl || '', list);
     return fetchVersionRace(Object.assign({
-      sources, fetch: fetcher, fs, now, log, cacheFile: versionCachePath
+      sources, fetch: fetcher, fs, now, log, cacheFile: versionCachePath,
+      verify: verifySignature   // v2.0.0：逐源验签，未签名/签名不符的源直接判失败
     }, more || {}));
   }
 
@@ -286,7 +371,8 @@ function createUpgrader(opt) {
     throw new Error('升级包下载重定向次数过多');
   }
 
-  // 下载单个 URL：流式写临时文件，带大小/超时保护；成功后返回文件路径。
+  // 下载单个 URL：流式写临时文件，带大小/超时保护；边下边算 sha256，返回 { size, sha256 }。
+  // 边下边算是为了不给 400MB 的上限再造一次全量读盘（多花几百毫秒、多一次 IO）。
   async function downloadOne(url, tmp) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), DOWNLOAD_TIMEOUT);
@@ -297,6 +383,7 @@ function createUpgrader(opt) {
       if (total > MAX_PKG) throw new Error('升级包过大（' + Math.round(total / 1048576) + 'MB）');
       if (!r.body || !r.body.getReader) throw new Error('响应没有可读流');
       const reader = r.body.getReader();
+      const hash = nodeCrypto.createHash('sha256');
       let got = 0, lastPct = -1, lastWriteAt = 0;
       fs.writeFileSync(tmp, Buffer.alloc(0));
       const fd = fs.openSync(tmp, 'a');
@@ -306,7 +393,9 @@ function createUpgrader(opt) {
           if (done) break;
           got += value.length;
           if (got > MAX_PKG) throw new Error('升级包超过 ' + Math.round(MAX_PKG / 1048576) + 'MB 上限');
-          fs.writeSync(fd, Buffer.from(value));
+          const buf = Buffer.from(value);
+          hash.update(buf);
+          fs.writeSync(fd, buf);
           const pct = total ? Math.min(95, Math.floor(got / total * 95)) : -1;
           // 节流：writeState 是同步 read+mkdir+write+rename，不能每个 1% 都落盘阻塞事件循环。
           // 至少间隔 500ms、或跨过 5% 台阶（以及 95% 收尾）才写一次。
@@ -319,8 +408,20 @@ function createUpgrader(opt) {
       } finally { fs.closeSync(fd); }
       if (got < 1024 * 512) throw new Error('下载内容过小（' + got + ' 字节），可能不是有效升级包');
       if (total && got < total * 0.9) throw new Error('下载不完整（' + got + '/' + total + '）');
-      return got;
+      return { size: got, sha256: hash.digest('hex').toLowerCase() };
     } finally { clearTimeout(timer); }
+  }
+
+  // 完整性校验：只比对 version.json 里声明的 sha256。
+  // 防的是「下载链路被篡改 / 传输出错 / 镜像返回了错文件」，不是防「仓库本身被攻陷」——
+  // 后者要靠对 version.json 做签名（私钥在发布者手上），hash 写在同一个文件里挡不住。
+  function checkSha256(actual, expected) {
+    const want = String(expected || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(want)) return { skipped: true };
+    if (String(actual || '').toLowerCase() !== want) {
+      throw new Error('升级包完整性校验失败（sha256 不符，文件可能被篡改或传输出错）：期望 ' + want.slice(0, 16) + '…，实际 ' + String(actual || '').slice(0, 16) + '…');
+    }
+    return { skipped: false };
   }
 
   // 校验 tar：必须含 server.js 与 public/index.html，防止把错误页/木马包覆盖进去；
@@ -333,14 +434,19 @@ function createUpgrader(opt) {
     const names = [];
     for (const line of stdout.split('\n')) {
       if (!line.trim()) continue;
-      // -tvzf 行首是类型字符，l + 9 位权限 = 符号链接（普通文件以 - 开头）
-      if (/^l[rwxstST-]{9}/.test(line)) throw new Error('升级包包含符号链接，已拒绝');
+      // -tvzf 行首是类型字符：l=符号链接、h=硬链接，两种都必须拒绝。
+      // 硬链接可以指向包外已有文件，借解包越界写 data/ 或凭据文件。
+      if (/^[lh][rwxstST-]{9}/.test(line)) throw new Error('升级包包含符号链接或硬链接，已拒绝');
       const mm = line.match(/\s\d{2}:\d{2}\s+(.+)$/); // verbose 输出「时:分」之后才是文件名
       const name = (mm ? mm[1] : line).trim().replace(/\\/g, '/'); // mock cp 的纯名字列表同样兼容
       if (!name) continue;
       if (name.startsWith('/') || /^[A-Za-z]:/.test(name) || name.split('/').indexOf('..') >= 0) {
         throw new Error('升级包包含非法路径条目，已拒绝：' + name.slice(0, 200));
       }
+      // data/ 是运行时数据（含信任根 pubkey.pem、备份、上传），升级包绝不允许携带，
+      // 否则一次"合法签名但打包含错"的发版就能把信任根换成攻击者密钥。
+      const rel = name.replace(/^[^/]+\//, '');
+      if (/^data\//i.test(rel)) throw new Error('升级包包含 data/ 目录内容，已拒绝：' + name.slice(0, 200));
       names.push(name);
     }
     const has = (s) => names.some((n) => /(^|\/)house-view-tracker\//.test(n) && n.endsWith(s));
@@ -373,14 +479,17 @@ function createUpgrader(opt) {
     await run('tar', ['-xzf', file, '-C', appDir]);
   }
 
-  // 重启：延时 2 秒让 HTTP 响应先发出去；systemd 优先，否则 nohup start.sh。
+  // 重启：延时 2 秒让 HTTP 响应先发出去；systemd 优先，否则走部署包自带的 restart.sh。
+  // 不再用 sh -c 拼字符串：serviceName / appDir 只要含 shell 元字符就可能命令注入。
   function scheduleRestart() {
-    const cmd = 'sleep 2; if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ' + serviceName +
-      ' 2>/dev/null; then systemctl restart ' + serviceName +
-      '; else pkill -f "node server.js" 2>/dev/null || true; cd "' + appDir + '" && nohup ./start.sh >> run.log 2>&1 & fi';
-    const child = cp.spawn('sh', ['-c', cmd], { detached: true, stdio: 'ignore', cwd: appDir });
+    const safeService = /^[A-Za-z0-9_.-]+$/.test(serviceName) ? serviceName : 'house-view-tracker';
+    const script = path.join(appDir, 'restart.sh');
+    // 参数作为独立 argv 传入，不拼进 shell 字符串；脚本内部做 2 秒延时与启动方式判断。
+    const child = cp.spawn('sh', [script, safeService],
+      { detached: true, stdio: 'ignore', cwd: appDir });
+    child.on('error', (e) => log('[upgrade] 重启脚本启动失败：' + e.message));
     try { child.unref(); } catch (_) {}
-    log('[upgrade] 已安排 2 秒后重启服务');
+    log('[upgrade] 已安排重启服务（' + script + '）');
   }
 
   // 升级主流程（异步，不阻塞请求；状态全部落盘）。
@@ -389,8 +498,23 @@ function createUpgrader(opt) {
     const st = readState();
     if (!isTerminal(st.phase) && now() - (st.ts || 0) < STALE_MS) throw new Error('上一次升级仍在进行中，请稍候');
     if (process.platform !== 'linux' && !o.allowNonLinux) throw new Error('一键升级仅支持 Linux 服务器；本机开发环境不会执行升级');
+
+    // === 第一道门：验签。任何升级动作都必须先过，和 check 是否验过无关（防绕过）。===
+    const trust = initTrust();
+    if (!trust.ok) throw new Error('信任根不可用：' + trust.note + '，拒绝升级');
+    const vr = verifySignature(info);
+    if (!vr.ok) throw new Error(vr.why);
+
     const list = sources(info);
     if (!list.length) throw new Error('版本文件没有配置升级包地址（downloadUrls / downloadUrl）');
+    // === 第二道门：下载源白名单。只认 HTTPS + 已知发布域名，版本文件自带什么就用什么的时代结束。===
+    const bad = list.filter((u) => !isAllowedSource(u));
+    if (bad.length) throw new Error('升级包含非法下载源（只允许 HTTPS + 已知发布域名）：' + bad[0].slice(0, 160));
+
+    // === 第三道门：sha256 必须有，缺了不再"跳过"。===
+    const wantSha = String((info && info.packageSha256) || '').trim();
+    if (!/^[0-9a-f]{64}$/i.test(wantSha)) throw new Error('版本文件未提供合法的 packageSha256，拒绝升级');
+
     running = true;
     const target = String(info.version || '').trim();
     let tmp = '';
@@ -398,9 +522,16 @@ function createUpgrader(opt) {
       writeState({ phase: 'downloading', ok: false, progress: 2, target, from: fromVersion, error: '', message: '准备下载升级包', backup: '', op: 'upgrade' });
       tmp = path.join(dataDir, '.hvt-upgrade-' + target.replace(/[^0-9A-Za-z.-]/g, '_') + '.tar.gz');
       let lastErr = null, size = 0;
+      // 完整性校验放在「每个下载源之后」而不是全部下完再统一做：主源镜像同步到一半时是坏包，
+      // 这时应该直接切备用源，而不是整轮失败。wantSha 已在入口处校验过存在性。
       for (const url of list) {
-        try { size = await downloadOne(url, tmp); lastErr = null; break; }
-        catch (e) { lastErr = e; log('[upgrade] 下载源失败 ' + url + '：' + e.message); writeState({ message: '一个下载源失败，正在切换备用源…' }); }
+        try {
+          const got = await downloadOne(url, tmp);
+          checkSha256(got.sha256, wantSha); // 不符会抛错，走 catch 切下一个源
+          size = got.size; lastErr = null; break;
+        } catch (e) {
+          lastErr = e; log('[upgrade] 下载源失败 ' + url + '：' + e.message); writeState({ message: '一个下载源失败，正在切换备用源…' });
+        }
       }
       if (lastErr) throw new Error('全部下载源均失败：' + lastErr.message);
       writeState({ phase: 'verifying', progress: 96, message: '正在校验升级包（' + Math.round(size / 1048576) + 'MB）' });
@@ -466,7 +597,8 @@ function createUpgrader(opt) {
 
   return { readState, writeState, sources, cmpVersion, start, rollback, onBoot, statePath, backupRoot,
     fetchVersion, versionSources, versionCachePath,
-    _internal: { downloadOne, verifyPkg, backup, restore, scheduleRestart } };
+    _internal: { downloadOne, verifyPkg, checkSha256, backup, restore, scheduleRestart,
+      initTrust, verifySignature, isAllowedSource, signedPayload, trustDir, pubkeyPath } };
 }
 
 module.exports = { createUpgrader, cmpVersion, STATE_FILE, BACKUP_DIR,
